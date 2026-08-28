@@ -122,19 +122,38 @@ namespace AutoRezzer
         {
             try
             {
-                var sheet = dataManager.GetExcelSheet<Lumina.Excel.Sheets.Action>();
+                // English explicitly: the names below are compared literally, and the client's own
+                // language would make every non-English install warn about nothing.
+                var sheet = dataManager.GetExcelSheet<Lumina.Excel.Sheets.Action>(Dalamud.Game.ClientLanguage.English);
                 if (sheet == null)
                     return;
 
-                foreach (uint id in new[]
+                // Paired with the name each id is supposed to have. Logging the name alone was not
+                // enough: Vercure shipped as 7519, which is Contre Sixte - an enemy-only ability -
+                // and the log dutifully said so while Red Mage stood there aiming an attack at
+                // itself and eating "Invalid target" once a second. A mismatch is now a warning.
+                foreach (var (id, expected) in new[]
                 {
-                    RezIds.Raise, RezIds.Resurrection, RezIds.Ascend,
-                    RezIds.Verraise, RezIds.Egeiro, RezIds.Swiftcast,
-                    RezIds.Vercure,
+                    (RezIds.Raise, "Raise"),
+                    (RezIds.Resurrection, "Resurrection"),
+                    (RezIds.Ascend, "Ascend"),
+                    (RezIds.Verraise, "Verraise"),
+                    (RezIds.Egeiro, "Egeiro"),
+                    (RezIds.Swiftcast, "Swiftcast"),
+                    (RezIds.Vercure, "Vercure"),
                 })
                 {
-                    string name = sheet.TryGetRow(id, out var row) ? row.Name.ExtractText() : "<missing>";
-                    log.Information($"[AutoRezzer] action {id} = \"{name}\"");
+                    if (!sheet.TryGetRow(id, out var row))
+                    {
+                        log.Warning($"[AutoRezzer] action {id} should be \"{expected}\" but that row does not exist.");
+                        continue;
+                    }
+
+                    string name = row.Name.ExtractText();
+                    if (!string.Equals(name, expected, StringComparison.Ordinal))
+                        log.Warning($"[AutoRezzer] action {id} should be \"{expected}\" but the game calls it \"{name}\". Casting it will misfire.");
+                    else
+                        log.Information($"[AutoRezzer] action {id} = \"{name}\"");
                 }
             }
             catch (Exception ex)

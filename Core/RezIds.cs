@@ -56,7 +56,7 @@ namespace AutoRezzer.Core
         /// cheapest thing on the bar that qualifies, which is why every Red Mage does exactly this
         /// by hand: a throwaway Vercure, then an instant Verraise.
         /// </summary>
-        public const uint Vercure = 7519;
+        public const uint Vercure = 7514;
         public const int VercureLevel = 54;
 
         /// <summary>The proc Vercure exists to buy. While it is up, Verraise is instant.</summary>

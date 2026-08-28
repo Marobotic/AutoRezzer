@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("AutoRezzer")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Release")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("0.1.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("0.1.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("0.1.0.0+0efdf945d658d7cc49022be4628b5ae2f2d4cc1f")]
 [assembly: System.Reflection.AssemblyProductAttribute("AutoRezzer")]
 [assembly: System.Reflection.AssemblyTitleAttribute("AutoRezzer")]
 [assembly: System.Reflection.AssemblyVersionAttribute("0.1.0.0")]

@@ -2,20 +2,22 @@
   "Author": "Mayo Botic",
   "Name": "AutoRezzer",
   "InternalName": "AutoRezzer",
-  "AssemblyVersion": "0.1.0.0",
-  "Description": "Raises dead players around you automatically, when you are on a job that can and it is safe to do so.\n\nOne switch. While it is on, any raisable body in range is raised - Swiftcast first when it is up - unless there are enemies standing on it.",
+  "AssemblyVersion": "1.0.0.0",
+  "Description": "A quick, handy tool for handling raises - both casting them and accepting them.\n\nOne switch. While it is on, any raisable body in range gets raised on whatever job you are on that can do it, Swiftcast first when it is up, and Red Mage going through Vercure for an instant Verraise. Bodies with a raise already on them are left alone, and nothing is cast on a corpse with enemies standing on it. The other half accepts raises cast on you, so you are not the one lying there waiting on a menu.\n\nBuilt mostly for Occult Crescent and FATEs, where people go down constantly and nobody is tracking who still needs picking up.",
   "ApplicableVersion": "any",
   "Tags": [
     "raise",
     "resurrect",
     "healer",
-    "auto"
+    "auto",
+    "fate",
+    "occult-crescent"
   ],
   "DalamudApiLevel": 15,
   "LoadRequiredState": 0,
   "LoadSync": false,
   "CanUnloadAsync": false,
   "LoadPriority": 0,
-  "Punchline": "Automatic raises, when it is safe to cast them.",
+  "Punchline": "Raises everyone around you, and accepts your own. Built for Occult Crescent and FATEs.",
   "AcceptsFeedback": false
 }

@@ -9,3 +9,4 @@
 /home/maro/Documents/GitHub/AutoRezzer/obj/Release/AutoRezzer.dll
 /home/maro/Documents/GitHub/AutoRezzer/obj/Release/AutoRezzer.pdb
 /home/maro/Documents/GitHub/AutoRezzer/bin/Release/images/icon.png
+/home/maro/Documents/GitHub/AutoRezzer/obj/Release/AutoRezzer.sourcelink.json

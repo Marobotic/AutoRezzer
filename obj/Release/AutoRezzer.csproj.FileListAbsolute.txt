@@ -1,0 +1,11 @@
+/home/maro/Documents/GitHub/AutoRezzer/obj/Release/AutoRezzer.csproj.AssemblyReference.cache
+/home/maro/Documents/GitHub/AutoRezzer/obj/Release/AutoRezzer.GeneratedMSBuildEditorConfig.editorconfig
+/home/maro/Documents/GitHub/AutoRezzer/obj/Release/AutoRezzer.AssemblyInfoInputs.cache
+/home/maro/Documents/GitHub/AutoRezzer/obj/Release/AutoRezzer.AssemblyInfo.cs
+/home/maro/Documents/GitHub/AutoRezzer/obj/Release/AutoRezzer.csproj.CoreCompileInputs.cache
+/home/maro/Documents/GitHub/AutoRezzer/bin/Release/AutoRezzer.deps.json
+/home/maro/Documents/GitHub/AutoRezzer/bin/Release/AutoRezzer.dll
+/home/maro/Documents/GitHub/AutoRezzer/bin/Release/AutoRezzer.pdb
+/home/maro/Documents/GitHub/AutoRezzer/obj/Release/AutoRezzer.dll
+/home/maro/Documents/GitHub/AutoRezzer/obj/Release/AutoRezzer.pdb
+/home/maro/Documents/GitHub/AutoRezzer/bin/Release/images/icon.png

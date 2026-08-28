@@ -1,0 +1,12 @@
+{
+  "version": 2,
+  "dgSpecHash": "rCF37NJDOwc=",
+  "success": true,
+  "projectFilePath": "/home/maro/Documents/GitHub/AutoRezzer/AutoRezzer.csproj",
+  "expectedPackageFiles": [
+    "/home/maro/.nuget/packages/dalamudpackager/11.0.0/dalamudpackager.11.0.0.nupkg.sha512",
+    "/home/maro/.nuget/packages/microsoft.windowsdesktop.app.ref/10.0.11/microsoft.windowsdesktop.app.ref.10.0.11.nupkg.sha512",
+    "/home/maro/.nuget/packages/microsoft.aspnetcore.app.ref/10.0.11/microsoft.aspnetcore.app.ref.10.0.11.nupkg.sha512"
+  ],
+  "logs": []
+}

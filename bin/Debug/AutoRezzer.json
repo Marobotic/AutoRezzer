@@ -1,0 +1,21 @@
+{
+  "Author": "Mayo Botic",
+  "Name": "AutoRezzer",
+  "InternalName": "AutoRezzer",
+  "AssemblyVersion": "0.1.0.0",
+  "Description": "Raises dead players around you automatically, when you are on a job that can and it is safe to do so.\n\nOne switch. While it is on, any raisable body in range is raised - Swiftcast first when it is up - unless there are enemies standing on it.",
+  "ApplicableVersion": "any",
+  "Tags": [
+    "raise",
+    "resurrect",
+    "healer",
+    "auto"
+  ],
+  "DalamudApiLevel": 15,
+  "LoadRequiredState": 0,
+  "LoadSync": false,
+  "CanUnloadAsync": false,
+  "LoadPriority": 0,
+  "Punchline": "Automatic raises, when it is safe to cast them.",
+  "AcceptsFeedback": false
+}

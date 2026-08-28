@@ -48,12 +48,14 @@ namespace AutoRezzer
 
         /// <summary>
         /// As Red Mage, whether to hardcast a throwaway Vercure to proc Dualcast when Swiftcast is
-        /// down, so Verraise still goes out instantly.
-        ///
-        /// On, because without it a Red Mage with Swiftcast on cooldown is a Red Mage who cannot
-        /// meaningfully raise for the next minute - Verraise bare is a ten second cast.
+        /// down, so Verraise still goes out instantly. Never hardcasts Verraise.
         /// </summary>
         public bool UseVercureForDualcast { get; set; } = true;
+
+        /// <summary>
+        /// Whether to pause Rotation Solver Reborn while raising a player so AutoRezzer gets priority.
+        /// </summary>
+        public bool PauseRotationSolver { get; set; } = true;
 
         /// <summary>
         /// Accept a raise cast on you, automatically, when you are the one on the floor.

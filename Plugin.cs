@@ -34,6 +34,7 @@ namespace AutoRezzer
         private readonly RezExecutor executor;
         private readonly RaiseAccepter accepter;
         private readonly JobSwitcher switcher;
+        private readonly RsrManager rsrManager;
         private readonly IDtrBarEntry dtr;
         private readonly WindowSystem windows = new("AutoRezzer");
         private readonly ConfigWindow configWindow;
@@ -76,6 +77,7 @@ namespace AutoRezzer
             executor = new RezExecutor(objectTable, condition, log, config);
             accepter = new RaiseAccepter(objectTable, gameGui, log, config);
             switcher = new JobSwitcher(objectTable, condition, log, config);
+            rsrManager = new RsrManager(pluginInterface, commandManager, log, config);
 
             configWindow = new ConfigWindow(
                 config, targeting, executor, switcher,
@@ -175,7 +177,10 @@ namespace AutoRezzer
                 return;
 
             if (!config.Enabled)
+            {
+                rsrManager.Resume();
                 return;
+            }
 
             // ── Already on a trip ──
             //
@@ -184,6 +189,7 @@ namespace AutoRezzer
             // over whether to be casting or changing clothes.
             if (switcher.Busy)
             {
+                rsrManager.Pause();
                 switcher.Tick(
                     stillWantsRaising: () => targeting.FindBody() != null,
                     tryRaise: () =>
@@ -210,8 +216,12 @@ namespace AutoRezzer
             {
                 var body = targeting.FindBody();
                 if (body == null)
+                {
+                    rsrManager.Resume();
                     return;
+                }
 
+                rsrManager.Pause();
                 if (executor.TryRaise(body, raiseAction) && config.Chatty)
                     chatGui.Print($"[AutoRezzer] {executor.LastAction}.");
 
@@ -225,11 +235,18 @@ namespace AutoRezzer
             // on the strength of a corpse thirty yalms behind a wall that it would then decline to
             // raise anyway.
             if (config.RezGearsetId < 0)
+            {
+                rsrManager.Resume();
                 return;
+            }
 
             if (targeting.FindBody() == null)
+            {
+                rsrManager.Resume();
                 return;
+            }
 
+            rsrManager.Pause();
             _ = switcher.Begin();
         }
 
@@ -282,6 +299,7 @@ namespace AutoRezzer
             {
                 targeting.Reset();
                 switcher.Cancel();
+                rsrManager.Resume();
             }
 
             pluginInterface.SavePluginConfig(config);
@@ -316,6 +334,7 @@ namespace AutoRezzer
             commandManager.RemoveHandler(ShortCommand);
             dtr.Remove();
             windows.RemoveAllWindows();
+            rsrManager.Dispose();
         }
     }
 }

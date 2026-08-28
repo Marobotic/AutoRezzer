@@ -82,7 +82,61 @@ namespace AutoRezzer.Core
             if (actionManager == null)
                 return false;
 
-            // Swiftcast, if it is worth it and available.
+            // ── Red Mage: Dualcast or Swiftcast ONLY, never hardcast ──
+            if (raiseAction == RezIds.Verraise)
+            {
+                bool hasInstantBuff = HasStatus(me, RezIds.DualcastStatus) || HasStatus(me, RezIds.SwiftcastStatus);
+
+                if (hasInstantBuff)
+                {
+                    // Instant Verraise via Dualcast or Swiftcast.
+                    uint raiseStatus = actionManager->GetActionStatus(ActionType.Action, RezIds.Verraise, body.GameObjectId);
+                    if (raiseStatus != 0)
+                        return false;
+
+                    if (!actionManager->UseAction(ActionType.Action, RezIds.Verraise, body.GameObjectId))
+                        return false;
+
+                    lastActionTick = now;
+                    LastAction = $"Raised {body.Name}";
+                    log.Information($"[AutoRezzer] Raising {body.Name} (Instant Verraise).");
+                    return true;
+                }
+
+                // Swiftcast if available.
+                if (config.UseSwiftcast
+                    && me.Level >= RezIds.SwiftcastLevel
+                    && actionManager->GetActionStatus(ActionType.Action, RezIds.Swiftcast) == 0)
+                {
+                    if (actionManager->UseAction(ActionType.Action, RezIds.Swiftcast))
+                    {
+                        lastActionTick = now;
+                        LastAction = "Swiftcast";
+                        log.Debug("[AutoRezzer] Swiftcast used.");
+                        return true;
+                    }
+                }
+
+                // Vercure on self to proc Dualcast when Swiftcast is down.
+                if (config.UseVercureForDualcast
+                    && me.Level >= RezIds.VercureLevel
+                    && actionManager->GetActionStatus(ActionType.Action, RezIds.Verraise, body.GameObjectId) == 0)
+                {
+                    if (actionManager->GetActionStatus(ActionType.Action, RezIds.Vercure, me.GameObjectId) == 0
+                        && actionManager->UseAction(ActionType.Action, RezIds.Vercure, me.GameObjectId))
+                    {
+                        lastActionTick = now;
+                        LastAction = "Vercure (for Dualcast)";
+                        log.Debug("[AutoRezzer] Vercure cast to proc Dualcast.");
+                        return true;
+                    }
+                }
+
+                // RDM NEVER hardcasts Verraise. If neither Swiftcast nor Vercure was sent, wait for next tick.
+                return false;
+            }
+
+            // ── All other raising jobs: Swiftcast first, fallback to hardcasting ──
             if (config.UseSwiftcast
                 && me.Level >= RezIds.SwiftcastLevel
                 && !HasStatus(me, RezIds.SwiftcastStatus)
@@ -97,34 +151,7 @@ namespace AutoRezzer.Core
                 }
             }
 
-            // ── Red Mage's fallback ──
-            //
-            // Swiftcast was either not wanted, not available, or already spent. RDM does not need it:
-            // Dualcast makes the next spell instant, and any hardcast buys Dualcast. So throw a
-            // Vercure at ourselves and let the next tick fire an instant Verraise.
-            //
-            // ONLY WHEN THERE IS NO OTHER WAY IN. Checked after Swiftcast rather than before, because
-            // Swiftcast is free and this costs a GCD and a little MP; and skipped entirely if
-            // Dualcast is already up, or the Vercure would be the thing that overwrote it.
-            if (raiseAction == RezIds.Verraise
-                && config.UseVercureForDualcast
-                && me.Level >= RezIds.VercureLevel
-                && !HasStatus(me, RezIds.DualcastStatus)
-                && !HasStatus(me, RezIds.SwiftcastStatus)
-                && actionManager->GetActionStatus(ActionType.Action, RezIds.Verraise, body.GameObjectId) == 0)
-            {
-                if (actionManager->GetActionStatus(ActionType.Action, RezIds.Vercure, me.GameObjectId) == 0
-                    && actionManager->UseAction(ActionType.Action, RezIds.Vercure, me.GameObjectId))
-                {
-                    lastActionTick = now;
-                    LastAction = "Vercure (for Dualcast)";
-                    log.Debug("[AutoRezzer] Vercure cast to proc Dualcast.");
-                    return true;
-                }
-            }
-
-            // The raise. GetActionStatus is the game's own "may I" - 0 means yes, and anything else
-            // is a reason we would only have discovered by being told no.
+            // The raise (instant if Swiftcast is active, otherwise hardcast).
             uint status = actionManager->GetActionStatus(ActionType.Action, raiseAction, body.GameObjectId);
             if (status != 0)
                 return false;

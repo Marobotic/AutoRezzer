@@ -108,8 +108,17 @@ namespace AutoRezzer.UI
                 save();
             }
             Help("When Swiftcast is on cooldown, cast a throwaway Vercure on yourself to proc "
-                 + "Dualcast, which makes the following Verraise instant. Without this a Red Mage "
-                 + "whose Swiftcast is down is looking at a 10 second hardcast.");
+                 + "Dualcast, making the following Verraise instant. Red Mage will never hardcast Verraise.");
+
+            bool rsr = config.PauseRotationSolver;
+            if (ImGui.Checkbox("Pause Rotation Solver Reborn while raising", ref rsr))
+            {
+                config.PauseRotationSolver = rsr;
+                save();
+            }
+            Help("Temporarily pauses Rotation Solver Reborn (/rotation Off) while AutoRezzer is "
+                 + "preparing or executing a raise, and resumes it (/rotation Auto) once finished. "
+                 + "This gives AutoRezzer priority over combat rotations.");
 
             bool strangers = config.RaiseStrangers;
             if (ImGui.Checkbox("Raise people outside my party", ref strangers))

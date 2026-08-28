@@ -103,5 +103,36 @@ namespace AutoRezzer
         /// <summary>Say in chat what was raised and why one was skipped. Off by default - this is a
         /// background thing, and a line per body turns a wipe recovery into a wall of text.</summary>
         public bool Chatty { get; set; } = false;
+
+        // ── Local Statistics ──
+
+        /// <summary>Total number of raises accepted for the local player.</summary>
+        public int AcceptedRaisesCount { get; set; } = 0;
+
+        /// <summary>Total number of raises cast by the plugin.</summary>
+        public int TotalRaisesCast { get; set; } = 0;
+
+        /// <summary>Raises cast broken down by Job/Class ID.</summary>
+        public Dictionary<uint, int> RaisesCastByJob { get; set; } = new();
+
+        public void RecordAcceptedRaise()
+        {
+            AcceptedRaisesCount++;
+        }
+
+        public void RecordCastRaise(uint jobId)
+        {
+            TotalRaisesCast++;
+            if (!RaisesCastByJob.ContainsKey(jobId))
+                RaisesCastByJob[jobId] = 0;
+            RaisesCastByJob[jobId]++;
+        }
+
+        public void ResetStats()
+        {
+            AcceptedRaisesCount = 0;
+            TotalRaisesCast = 0;
+            RaisesCastByJob.Clear();
+        }
     }
 }

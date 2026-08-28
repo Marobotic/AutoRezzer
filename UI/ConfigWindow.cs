@@ -33,7 +33,7 @@ namespace AutoRezzer.UI
             this.setEnabled = setEnabled;
             this.save = save;
 
-            Size = new Vector2(430, 420);
+            Size = new Vector2(440, 520);
             SizeCondition = ImGuiCond.FirstUseEver;
         }
 
@@ -200,6 +200,55 @@ namespace AutoRezzer.UI
             if (ImGui.Checkbox("Switch back afterwards", ref back))
             {
                 config.SwitchBackAfter = back;
+                save();
+            }
+
+            ImGui.Separator();
+
+            // ── Local Statistics ──
+            ImGui.TextUnformatted("Statistics");
+            ImGui.TextDisabled("Recorded locally on this client.");
+
+            int totalCast = config.TotalRaisesCast;
+            int totalAccepted = config.AcceptedRaisesCount;
+            int totalAll = totalCast + totalAccepted;
+
+            ImGui.Text($"Total Rezzes Handled: {totalAll}");
+            ImGui.BulletText($"Rezzes Cast: {totalCast}");
+            ImGui.BulletText($"Rezzes Accepted: {totalAccepted}");
+
+            if (ImGui.TreeNode("Rezzes per Class"))
+            {
+                uint[] knownRaisingJobs = new uint[]
+                {
+                    RezIds.WhiteMage,
+                    RezIds.RedMage,
+                    RezIds.Sage,
+                    RezIds.Scholar,
+                    RezIds.Astrologian,
+                    RezIds.Summoner,
+                    RezIds.Conjurer,
+                    RezIds.Arcanist,
+                };
+
+                foreach (var jobId in knownRaisingJobs)
+                {
+                    int count = config.RaisesCastByJob.TryGetValue(jobId, out var c) ? c : 0;
+                    ImGui.BulletText($"{RezIds.JobName(jobId)}: {count}");
+                }
+
+                foreach (var (jobId, count) in config.RaisesCastByJob)
+                {
+                    if (Array.IndexOf(knownRaisingJobs, jobId) < 0)
+                        ImGui.BulletText($"{RezIds.JobName(jobId)}: {count}");
+                }
+
+                ImGui.TreePop();
+            }
+
+            if (ImGui.Button("Reset Statistics"))
+            {
+                config.ResetStats();
                 save();
             }
         }

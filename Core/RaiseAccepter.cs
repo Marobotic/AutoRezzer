@@ -88,7 +88,8 @@ namespace AutoRezzer.Core
 
             lastPressTick = now;
             _ = addon->FireCallbackInt(0);
-            log.Information("[AutoRezzer] Accepted a raise.");
+            config.RecordAcceptedRaise();
+            log.Information($"[AutoRezzer] Accepted a raise. (Total accepted: {config.AcceptedRaisesCount})");
             return true;
         }
     }

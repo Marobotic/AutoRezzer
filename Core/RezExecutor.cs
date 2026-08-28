@@ -97,9 +97,10 @@ namespace AutoRezzer.Core
                     if (!actionManager->UseAction(ActionType.Action, RezIds.Verraise, body.GameObjectId))
                         return false;
 
+                    config.RecordCastRaise(me.ClassJob.RowId);
                     lastActionTick = now;
                     LastAction = $"Raised {body.Name}";
-                    log.Information($"[AutoRezzer] Raising {body.Name} (Instant Verraise).");
+                    log.Information($"[AutoRezzer] Raising {body.Name} (Instant Verraise). Total cast: {config.TotalRaisesCast}.");
                     return true;
                 }
 
@@ -159,9 +160,10 @@ namespace AutoRezzer.Core
             if (!actionManager->UseAction(ActionType.Action, raiseAction, body.GameObjectId))
                 return false;
 
+            config.RecordCastRaise(me.ClassJob.RowId);
             lastActionTick = now;
             LastAction = $"Raised {body.Name}";
-            log.Information($"[AutoRezzer] Raising {body.Name}.");
+            log.Information($"[AutoRezzer] Raising {body.Name}. Total cast: {config.TotalRaisesCast}.");
             return true;
         }
 

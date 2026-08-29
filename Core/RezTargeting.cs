@@ -11,6 +11,17 @@ using FFXIVClientStructs.FFXIV.Common.Component.BGCollision;
 namespace AutoRezzer.Core
 {
     /// <summary>
+    /// What the last sweep saw, for the window to describe the room with.
+    ///
+    /// Counted over the same 30 yalms the raise itself works in, so the numbers on screen are the
+    /// numbers the plugin is actually reasoning about rather than a zone-wide headcount.
+    /// </summary>
+    /// <param name="Players">Other players in range, alive or not.</param>
+    /// <param name="Dead">How many of them are on the floor.</param>
+    /// <param name="Raised">How many of the dead already have a raise inbound or waiting.</param>
+    internal readonly record struct Surroundings(int Players, int Dead, int Raised);
+
+    /// <summary>
     /// Decides who, if anybody, should be raised right now.
     ///
     /// ── WHERE THIS CAME FROM ──────────────────────────────────────────────
@@ -32,6 +43,7 @@ namespace AutoRezzer.Core
         private readonly IClientState clientState;
         private readonly IObjectTable objectTable;
         private readonly Configuration config;
+        private readonly PhantomJobs phantom;
 
         /// <summary>When each body was first seen dead, so the raise delay has something to count
         /// from. Keyed by object id and swept whenever somebody stops being dead.</summary>
@@ -43,16 +55,46 @@ namespace AutoRezzer.Core
         private readonly Dictionary<ulong, (long ExpiresAt, bool Visible)> losCache = new();
         private const long LosTtlMs = 200;
 
-        public RezTargeting(IClientState clientState, IObjectTable objectTable, Configuration config)
+        public RezTargeting(IClientState clientState, IObjectTable objectTable, Configuration config,
+            PhantomJobs phantom)
         {
             this.clientState = clientState;
             this.objectTable = objectTable;
             this.config = config;
+            this.phantom = phantom;
         }
 
-        /// <summary>Why nothing is being raised, for the config window to show. Empty when the
-        /// plugin is simply idle with nobody on the floor.</summary>
-        public string LastReason { get; private set; } = string.Empty;
+        /// <summary>
+        /// Why nothing is being raised, for the config window to show.
+        ///
+        /// TWO SOURCES, KEPT APART. "This job cannot raise" comes from CanRaise and "enemies are
+        /// standing on the body" comes from the sweep, and the sweep clears its own reason on every
+        /// pass. Sharing one field meant the sweep wiped the job reason a fraction of a second after
+        /// CanRaise wrote it, so the window flickered between the explanation and nothing at all.
+        /// </summary>
+        public string LastReason
+        {
+            get
+            {
+                if (!string.IsNullOrEmpty(jobReason))
+                    return jobReason;
+
+                // MP before the sweep's own reason: "not enough MP" is the one that explains why
+                // nothing is happening to a body the plugin has otherwise decided it likes.
+                return string.IsNullOrEmpty(mpReason) ? holdReason : mpReason;
+            }
+        }
+
+        private string jobReason = string.Empty;
+        private string holdReason = string.Empty;
+        private string mpReason = string.Empty;
+
+        /// <summary>What the last sweep saw. Refreshed every tick, whatever the outcome.</summary>
+        public Surroundings LastSurroundings { get; private set; }
+
+        /// <summary>Who the last sweep settled on, or empty. Kept as a string rather than the object
+        /// so the window can draw it without holding on to a game object between frames.</summary>
+        public string LastTargetName { get; private set; } = string.Empty;
 
         /// <summary>
         /// Whether this character can raise at all: the right job, at the right level.
@@ -67,25 +109,80 @@ namespace AutoRezzer.Core
 
             var me = objectTable.LocalPlayer;
             if (me == null)
+            {
+                jobReason = string.Empty;
                 return false;
+            }
+
+            // ── Occult Crescent, asked FIRST ──
+            //
+            // Before the job at all, because the phantom job grants this and your class has nothing
+            // to do with it. Asking "can this job raise" first would turn a Warrior holding Occult
+            // Raise away at the door.
+            if (config.UseOccultRaise && phantom.CanOccultRaise)
+            {
+                raiseAction = RezIds.OccultRaise;
+                jobReason = string.Empty;
+                return true;
+            }
 
             uint job = me.ClassJob.RowId;
             uint action = RezIds.RaiseActionFor(job);
             if (action == 0)
             {
-                LastReason = "This job cannot raise.";
+                jobReason = "This job cannot raise.";
                 return false;
             }
 
             int need = RezIds.RaiseLevelFor(job);
             if (me.Level < need)
             {
-                LastReason = $"Level {me.Level}; this job raises from {need}.";
+                jobReason = $"Level {me.Level}; this job raises from {need}.";
                 return false;
             }
 
             raiseAction = action;
+            jobReason = string.Empty;
             return true;
+        }
+
+        /// <summary>
+        /// Whether there is enough MP to see a raise through, and whether it is worth interrupting
+        /// anything to try.
+        ///
+        /// ASKED BEFORE ROTATION SOLVER IS TOUCHED, which is the whole point of it being a separate
+        /// question rather than a check inside the cast. Pausing somebody's rotation and then
+        /// failing to raise is the worst of both: they lose the GCD and nobody gets up. So the
+        /// floor is consulted while the plugin is still deciding whether to get involved.
+        ///
+        /// Red Mage without Dualcast or Swiftcast has to buy the proc with Vercure first, so its
+        /// floor is the raise plus Vercure. Occult Raise is free and skips this entirely.
+        /// </summary>
+        public bool HasMpForRaise(uint raiseAction)
+        {
+            mpReason = string.Empty;
+
+            if (RezIds.IsOccult(raiseAction))
+                return true;
+
+            var me = objectTable.LocalPlayer;
+            if (me == null)
+                return false;
+
+            int need = config.MinimumMpForRaise;
+
+            if (raiseAction == RezIds.Verraise
+                && !HasStatus(me, RezIds.DualcastStatus)
+                && !HasStatus(me, RezIds.SwiftcastStatus))
+            {
+                need += RezIds.VercureMpCost;
+            }
+
+            if (me.CurrentMp >= need)
+                return true;
+
+            mpReason = $"Holding: {me.CurrentMp:N0} MP, needs {need:N0}.";
+            return false;
         }
 
         /// <summary>
@@ -99,16 +196,29 @@ namespace AutoRezzer.Core
         {
             var me = objectTable.LocalPlayer;
             if (me == null)
+            {
+                LastSurroundings = default;
+                LastTargetName = string.Empty;
                 return null;
+            }
 
             long now = Environment.TickCount64;
             IBattleChara? best = null;
             float bestDistance = float.MaxValue;
             bool sawSomeone = false;
 
+            // The headcount, kept separately from the filter's own answer. The window says "20
+            // players around, 2 dead already, 1 rezzed", and every one of those numbers has to be
+            // the honest count of what is out there - NOT what survived the filter. A body skipped
+            // because it is not in your party is still a body, and reporting it as absent would
+            // make the plugin look like it had not noticed.
+            int players = 0;
+            int dead = 0;
+            int raised = 0;
+
             // Cleared per sweep, or the window keeps reporting the last reason forever - "enemies
             // are standing on the body" would still be on screen minutes after everybody got up.
-            LastReason = string.Empty;
+            holdReason = string.Empty;
 
             foreach (var obj in objectTable)
             {
@@ -118,11 +228,24 @@ namespace AutoRezzer.Core
                 if (body.GameObjectId == me.GameObjectId)
                     continue;
 
-                if (!IsDeadAndRaisable(body, now))
-                    continue;
-
+                // RANGE FIRST, before anything else is asked about this object. It is the cheapest
+                // test available and it throws away most of a crowded zone, which matters when the
+                // sweep now touches every player rather than only the dead ones.
                 float distance = Vector3.Distance(me.Position, body.Position);
                 if (distance > 30f)
+                    continue;
+
+                players++;
+
+                bool isDown = body.IsDead && body.CurrentHp == 0;
+                if (isDown)
+                {
+                    dead++;
+                    if (HasStatus(body, RezIds.RaisePending))
+                        raised++;
+                }
+
+                if (!IsDeadAndRaisable(body, now))
                     continue;
 
                 // Counted only once in range. A body across the zone is not something the window
@@ -145,12 +268,14 @@ namespace AutoRezzer.Core
                 }
             }
 
+            LastSurroundings = new Surroundings(players, dead, raised);
+            LastTargetName = best?.Name.TextValue ?? string.Empty;
             SweepStaleDeaths(now);
 
-            if (best == null && sawSomeone && string.IsNullOrEmpty(LastReason))
-                LastReason = "Someone is down, but not safe or not reachable yet.";
+            if (best == null && sawSomeone && string.IsNullOrEmpty(holdReason))
+                holdReason = "Someone is down, but not safe or not reachable yet.";
             else if (best != null)
-                LastReason = string.Empty;
+                holdReason = string.Empty;
 
             return best;
         }
@@ -173,9 +298,6 @@ namespace AutoRezzer.Core
             // Someone already cast on them. This is the check that keeps two rezzers - or this
             // plugin and the party's actual healer - from both spending a cast on one corpse.
             if (HasStatus(body, RezIds.RaisePending))
-                return false;
-
-            if (config.SkipBrinkOfDeath && HasStatus(body, RezIds.BrinkOfDeath))
                 return false;
 
             if (!config.RaiseStrangers && !IsPartyOrAlliance(body))
@@ -235,7 +357,7 @@ namespace AutoRezzer.Core
                 if (!IsHostile(npc))
                     continue;
 
-                LastReason = "Holding: enemies are standing on the body.";
+                holdReason = "Holding: enemies are standing on the body.";
                 return false;
             }
 
@@ -362,7 +484,11 @@ namespace AutoRezzer.Core
         {
             deadSince.Clear();
             losCache.Clear();
-            LastReason = string.Empty;
+            jobReason = string.Empty;
+            holdReason = string.Empty;
+            mpReason = string.Empty;
+            LastSurroundings = default;
+            LastTargetName = string.Empty;
         }
     }
 }

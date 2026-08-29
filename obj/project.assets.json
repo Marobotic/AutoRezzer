@@ -45,7 +45,7 @@
     "/home/maro/.nuget/packages/": {}
   },
   "project": {
-    "version": "1.0.0",
+    "version": "1.1.0",
     "restore": {
       "projectUniqueName": "/home/maro/Documents/GitHub/AutoRezzer/AutoRezzer.csproj",
       "projectName": "AutoRezzer",

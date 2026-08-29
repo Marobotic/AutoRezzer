@@ -2,8 +2,8 @@
   "Author": "Mayo Botic",
   "Name": "AutoRezzer",
   "InternalName": "AutoRezzer",
-  "AssemblyVersion": "1.0.0.0",
-  "Description": "A quick, handy tool for handling raises - both casting them and accepting them.\n\nOne switch. While it is on, any raisable body in range gets raised on whatever job you are on that can do it, Swiftcast first when it is up, and Red Mage going through Vercure for an instant Verraise. Bodies with a raise already on them are left alone, and nothing is cast on a corpse with enemies standing on it. The other half accepts raises cast on you, so you are not the one lying there waiting on a menu.\n\nBuilt mostly for Occult Crescent and FATEs, where people go down constantly and nobody is tracking who still needs picking up.",
+  "AssemblyVersion": "1.1.0.0",
+  "Description": "A quick, handy tool for handling raises - both casting them and accepting them.\n\nREQUIRES Rotation Solver Reborn. Add the Combat Reborn repository first:\nhttps://raw.githubusercontent.com/FFXIV-CombatReborn/CombatRebornRepo/main/pluginmaster.json\n\nOne switch, and it governs everything - off means nothing raises, nothing is accepted, and nothing is switched. While it is on, any raisable body in range gets raised on whatever job you are on that can do it, Swiftcast first when it is up, and Red Mage going through Vercure for an instant Verraise. Bodies with a raise already on them are left alone. The other half accepts raises cast on you, so you are not the one lying there waiting on a menu.\n\nPauses Rotation Solver Reborn for the length of a raise and puts it back the way it was - including Henched, which is what BOCCHI's Illegal Mode drives RSR with, so the two do not fight over targeting.\n\nIn Occult Crescent it uses the phantom job's own raise instead - Occult Raise on Phantom White Mage 4+, or Revive on Phantom Chemist 3+ - both instant, free and on a five second recast, and neither cares what job you are on, so a Warrior raises too. It can optionally borrow a raising phantom job out of combat and put yours back afterwards. Outside that it will not start a raise below 2400 MP, and below the floor it leaves your rotation alone rather than pausing it for nothing.\n\nBuilt mostly for Occult Crescent and FATEs, where people go down constantly and nobody is tracking who still needs picking up.",
   "ApplicableVersion": "any",
   "Tags": [
     "raise",
@@ -11,7 +11,10 @@
     "healer",
     "auto",
     "fate",
-    "occult-crescent"
+    "occult-crescent",
+    "rotationsolver",
+    "bocchi",
+    "phantom-job"
   ],
   "DalamudApiLevel": 15,
   "LoadRequiredState": 0,

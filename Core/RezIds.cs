@@ -40,6 +40,79 @@ namespace AutoRezzer.Core
         /// </summary>
         public const uint Blizzard = 142;
 
+        // ══════════════════════════════════════════════════════════
+        //  OCCULT CRESCENT
+        // ══════════════════════════════════════════════════════════
+
+        /// <summary>
+        /// Occult Raise. Instant, five second recast, and free.
+        ///
+        /// EVERY RULE ELSEWHERE EXISTS BECAUSE OF THE COSTS THIS ONE DOES NOT HAVE. The Swiftcast
+        /// dance is to avoid an eight second cast; the MP floor is because a raise is 2400 MP and
+        /// spending it is what leaves a healer unable to heal; the Red Mage detour buys an instant
+        /// cast with a gearset swap. Occult Raise is instant, costs nothing, and comes back in five
+        /// seconds - so inside Occult Crescent, on Phantom White Mage, none of that machinery has
+        /// anything to decide and all of it is skipped.
+        ///
+        /// It is also job-agnostic: a Warrior with the phantom job equipped can raise with it. That
+        /// is why the "this job cannot raise" gate has to know about this action rather than being
+        /// asked first.
+        /// </summary>
+        public const uint OccultRaise = 49070;
+
+        /// <summary>
+        /// Revive, Phantom Chemist's raise. The same deal as Occult Raise in every respect that
+        /// matters: instant, free, five second recast, thirty yalms.
+        ///
+        /// Two jobs with the same capability is why the raiser is chosen rather than assumed - see
+        /// PhantomRaiseActionFor. Occult Potion and Occult Ether beside it on the same bar cost an
+        /// ITEM rather than MP, which is why "free" here is checked per action and not per job.
+        /// </summary>
+        public const uint Revive = 41634;
+
+        /// <summary>Phantom White Mage's row in the MKDSupportJob sheet. The support-job level array
+        /// on OccultCrescentState is indexed by this row directly.</summary>
+        public const byte PhantomWhiteMage = 17;
+
+        /// <summary>Phantom Chemist's row in the same sheet.</summary>
+        public const byte PhantomChemist = 10;
+
+        /// <summary>The phantom level Occult Raise unlocks at. Phantom White Mage caps at 5.</summary>
+        public const int OccultRaiseLevel = 4;
+
+        /// <summary>The phantom level Revive unlocks at. Phantom Chemist caps at 4.</summary>
+        public const int ReviveLevel = 3;
+
+        /// <summary>The phantom raise a support job grants, or 0 for the twenty-two that grant none.</summary>
+        public static uint PhantomRaiseActionFor(int jobRow) => jobRow switch
+        {
+            PhantomWhiteMage => OccultRaise,
+            PhantomChemist => Revive,
+            _ => 0u,
+        };
+
+        /// <summary>The phantom level that raise appears at, or 0.</summary>
+        public static int PhantomRaiseLevelFor(int jobRow) => jobRow switch
+        {
+            PhantomWhiteMage => OccultRaiseLevel,
+            PhantomChemist => ReviveLevel,
+            _ => 0,
+        };
+
+        /// <summary>Every support job that can raise, in the order they are offered.</summary>
+        public static readonly byte[] PhantomRaisers = { PhantomWhiteMage, PhantomChemist };
+
+        // ── What a raise costs ──
+        //
+        // Read out of the game's own Action sheet rather than remembered: PrimaryCostValue is in
+        // units of 100 MP, so Raise's "24" is 2400 and Vercure's "5" is 500.
+
+        /// <summary>Every hardcastable raise in the game costs this. Verraise included.</summary>
+        public const int RaiseMpCost = 2400;
+
+        /// <summary>Vercure, which Red Mage pays on top of the raise when it needs Dualcast.</summary>
+        public const int VercureMpCost = 500;
+
         // ── Swiftcast ──
         public const uint Swiftcast = 7561;
         public const uint SwiftcastStatus = 167;
@@ -76,6 +149,9 @@ namespace AutoRezzer.Core
         /// else who can do it at all can do it at 12.</summary>
         public const int RaiseLevel = 12;
         public const int VerraiseLevel = 64;
+
+        /// <summary>Whether an action is one of the free, instant, job-agnostic phantom raises.</summary>
+        public static bool IsOccult(uint action) => action is OccultRaise or Revive;
 
         /// <summary>A job's name, for the gearset picker.</summary>
         public static string JobName(uint job) => job switch

@@ -48,6 +48,12 @@ namespace AutoRezzer.Core
         /// game's own idea of the current gearset is already the new one.</summary>
         private int returnToGearset = -1;
 
+        /// <summary>The gearset this trip is heading for. Held rather than read back out of the
+        /// config each tick, because there are now two reasons to switch - the wrong job, and the
+        /// out-of-combat Red Mage route - and a trip that changed its mind halfway would equip one
+        /// gearset and then wait forever for a different job to appear.</summary>
+        private int targetGearset = -1;
+
         private long phaseSince;
 
         /// <summary>
@@ -75,11 +81,23 @@ namespace AutoRezzer.Core
         /// off and the window knows to say what is happening.</summary>
         public bool Busy => Current != Phase.Idle;
 
+        /// <summary>Which gearset the trip in flight is heading for, or -1 when idle.</summary>
+        public int TargetGearset => targetGearset;
+
         public string Describe() => Current switch
         {
             Phase.Switching => "Switching job to raise...",
             Phase.Raising => "Raising.",
             Phase.Returning => "Switching back...",
+            _ => string.Empty,
+        };
+
+        /// <summary>The same thing as a clause, for the middle of the window's status sentence.</summary>
+        public string ShortPhase => Current switch
+        {
+            Phase.Switching => "switching job",
+            Phase.Raising => "raising",
+            Phase.Returning => "switching back",
             _ => string.Empty,
         };
 
@@ -156,28 +174,77 @@ namespace AutoRezzer.Core
         /// Returns false when it could not start, which is the common case and not an error - in
         /// combat, no gearset chosen, or already on the right job.
         /// </summary>
-        public unsafe bool Begin()
+        public unsafe bool Begin(int gearsetId)
         {
-            if (Busy || config.RezGearsetId < 0)
+            if (Busy || gearsetId < 0)
                 return false;
 
             if (!CanSwitchNow())
                 return false;
 
             var module = RaptureGearsetModule.Instance();
-            if (module == null || !module->IsValidGearset(config.RezGearsetId))
+            if (module == null || !module->IsValidGearset(gearsetId))
                 return false;
 
             // Written before the equip, or we would be recording the gearset we are moving TO.
             returnToGearset = module->CurrentGearsetIndex;
-            if (returnToGearset == config.RezGearsetId)
+            if (returnToGearset == gearsetId)
                 return false;
 
-            log.Information($"[AutoRezzer] Switching to gearset {config.RezGearsetId} to raise.");
-            _ = module->EquipGearset(config.RezGearsetId);
+            targetGearset = gearsetId;
+
+            log.Information($"[AutoRezzer] Switching to gearset {gearsetId} to raise.");
+            _ = module->EquipGearset(gearsetId);
 
             Enter(Phase.Switching);
             return true;
+        }
+
+        /// <summary>
+        /// The first gearset that would put you on a given job, or -1.
+        ///
+        /// The default for the Red Mage route, so somebody who owns exactly one Red Mage set - which
+        /// is most people who own any - never has to pick it out of a list to switch the option on.
+        /// </summary>
+        public static unsafe int FirstGearsetForJob(uint job)
+        {
+            var module = RaptureGearsetModule.Instance();
+            if (module == null)
+                return -1;
+
+            for (int i = 0; i < 100; i++)
+            {
+                if (!module->IsValidGearset(i))
+                    continue;
+
+                var entry = module->GetGearset(i);
+                if (entry != null && entry->ClassJob == job)
+                    return i;
+            }
+
+            return -1;
+        }
+
+        /// <summary>Every gearset on one particular job, for the Red Mage picker.</summary>
+        public static unsafe List<(int Id, string Name)> GearsetsForJob(uint job)
+        {
+            var found = new List<(int, string)>();
+
+            var module = RaptureGearsetModule.Instance();
+            if (module == null)
+                return found;
+
+            for (int i = 0; i < 100; i++)
+            {
+                if (!module->IsValidGearset(i))
+                    continue;
+
+                var entry = module->GetGearset(i);
+                if (entry != null && entry->ClassJob == job)
+                    found.Add((i, entry->NameString));
+            }
+
+            return found;
         }
 
         /// <summary>
@@ -209,7 +276,7 @@ namespace AutoRezzer.Core
             {
                 case Phase.Switching:
                 {
-                    uint want = JobOfGearset(config.RezGearsetId);
+                    uint want = JobOfGearset(targetGearset);
                     var me = objectTable.LocalPlayer;
 
                     if (me != null && want != 0 && me.ClassJob.RowId == want)
@@ -249,6 +316,7 @@ namespace AutoRezzer.Core
                 {
                     if (!config.SwitchBackAfter || returnToGearset < 0)
                     {
+                        targetGearset = -1;
                         Enter(Phase.Idle);
                         return;
                     }
@@ -260,6 +328,7 @@ namespace AutoRezzer.Core
                     {
                         log.Information("[AutoRezzer] Back on the original job.");
                         returnToGearset = -1;
+                        targetGearset = -1;
                         Enter(Phase.Idle);
                         return;
                     }
@@ -268,6 +337,7 @@ namespace AutoRezzer.Core
                     {
                         log.Warning("[AutoRezzer] Gave up switching back; still on the raising job.");
                         returnToGearset = -1;
+                        targetGearset = -1;
                         Enter(Phase.Idle);
                         return;
                     }
@@ -283,11 +353,30 @@ namespace AutoRezzer.Core
             }
         }
 
-        /// <summary>Abandons whatever is in flight. Called when the plugin is switched off, so it
-        /// does not silently resume a trip nobody wants any more.</summary>
+        /// <summary>
+        /// Gives up on the raise but still goes home, if there is a home to go to.
+        ///
+        /// The difference from Cancel matters when the plugin is switched off mid-swap: Cancel
+        /// abandons the trip where it stands, which means abandoning the player on the raising
+        /// gearset. Turning a plugin off should not cost somebody their gear.
+        /// </summary>
+        public void Abort()
+        {
+            if (Busy && returnToGearset >= 0 && config.SwitchBackAfter)
+            {
+                Enter(Phase.Returning);
+                return;
+            }
+
+            Cancel();
+        }
+
+        /// <summary>Abandons whatever is in flight, where it stands. For when the player has taken
+        /// the wheel themselves and undoing their choice would be the rude thing to do.</summary>
         public void Cancel()
         {
             returnToGearset = -1;
+            targetGearset = -1;
             Enter(Phase.Idle);
         }
 

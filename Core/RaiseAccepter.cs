@@ -10,7 +10,8 @@ namespace AutoRezzer.Core
     ///
     /// The other half of the plugin, and the half that works on every job in the game: anybody can
     /// be raised. A Warrior who will never cast a thing still benefits from this, which is why it
-    /// has its own switch rather than living under the job selector.
+    /// has its own switch rather than living under the job selector - though that switch, like
+    /// every other one here, only means anything while the plugin itself is on.
     /// </summary>
     internal sealed class RaiseAccepter
     {
@@ -19,6 +20,10 @@ namespace AutoRezzer.Core
         private readonly IPluginLog log;
         private readonly Configuration config;
 
+        /// <summary>Writes the config out. The accepted-raise count is only worth keeping if it
+        /// survives the session it was earned in.</summary>
+        private readonly Action saveConfig;
+
         private long lastPressTick;
 
         /// <summary>The prompt does not vanish the instant it is answered, so without a floor this
@@ -26,12 +31,14 @@ namespace AutoRezzer.Core
         /// and noise at the packet level is the thing worth not generating.</summary>
         private const long PressFloorMs = 500;
 
-        public RaiseAccepter(IObjectTable objectTable, IGameGui gameGui, IPluginLog log, Configuration config)
+        public RaiseAccepter(IObjectTable objectTable, IGameGui gameGui, IPluginLog log,
+            Configuration config, Action saveConfig)
         {
             this.objectTable = objectTable;
             this.gameGui = gameGui;
             this.log = log;
             this.config = config;
+            this.saveConfig = saveConfig;
         }
 
         /// <summary>
@@ -89,6 +96,7 @@ namespace AutoRezzer.Core
             lastPressTick = now;
             _ = addon->FireCallbackInt(0);
             config.RecordAcceptedRaise();
+            saveConfig();
             log.Information($"[AutoRezzer] Accepted a raise. (Total accepted: {config.AcceptedRaisesCount})");
             return true;
         }

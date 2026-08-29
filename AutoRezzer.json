@@ -2,8 +2,8 @@
   "Author": "Mayo Botic",
   "Name": "AutoRezzer",
   "InternalName": "AutoRezzer",
-  "AssemblyVersion": "1.0.0.0",
-  "Description": "A quick, handy tool for handling raises - both casting them and accepting them.\n\nOne switch. While it is on, any raisable body in range gets raised on whatever job you are on that can do it, Swiftcast first when it is up, and Red Mage going through Vercure for an instant Verraise. Bodies with a raise already on them are left alone, and nothing is cast on a corpse with enemies standing on it. The other half accepts raises cast on you, so you are not the one lying there waiting on a menu.\n\nBuilt mostly for Occult Crescent and FATEs, where people go down constantly and nobody is tracking who still needs picking up.",
+  "AssemblyVersion": "1.1.0.0",
+  "Description": "Raises dead players around you, and accepts raises cast on you.\n\nRequires Rotation Solver Reborn - add the Combat Reborn repository:\nhttps://raw.githubusercontent.com/FFXIV-CombatReborn/CombatRebornRepo/main/pluginmaster.json\n\nOne switch. Anyone in range who needs a raise gets one, Swiftcast first. In Occult Crescent it uses Occult Raise or Revive instead, which work on any job. It pauses your rotation only for the cast, and won't start one below 2400 MP.\n\nBuilt for Occult Crescent and FATEs.",
   "Punchline": "Raises everyone around you, and accepts your own. Built for Occult Crescent and FATEs.",
   "ApplicableVersion": "any",
   "DalamudApiLevel": 15,
@@ -12,5 +12,15 @@
   "CanUnloadAsync": false,
   "LoadPriority": 0,
   "AcceptsFeedback": false,
-  "Tags": [ "raise", "resurrect", "healer", "auto", "fate", "occult-crescent" ]
+  "Tags": [
+    "raise",
+    "resurrect",
+    "healer",
+    "auto",
+    "fate",
+    "occult-crescent",
+    "rotationsolver",
+    "bocchi",
+    "phantom-job"
+  ]
 }

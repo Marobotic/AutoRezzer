@@ -2,9 +2,9 @@
     <PropertyGroup>
         <AssemblyName>AutoRezzer</AssemblyName>
         <RootNamespace>AutoRezzer</RootNamespace>
-        <Version>1.1.0.0</Version>
-        <FileVersion>1.1.0.0</FileVersion>
-        <AssemblyVersion>1.1.0.0</AssemblyVersion>
+        <Version>1.4.0.0</Version>
+        <FileVersion>1.4.0.0</FileVersion>
+        <AssemblyVersion>1.4.0.0</AssemblyVersion>
         <TargetFramework>net10.0-windows</TargetFramework>
         <Platforms>x64</Platforms>
         <Nullable>enable</Nullable>
@@ -45,6 +45,26 @@
             <HintPath>$(appdata)\XIVLauncher\addon\Hooks\dev\Newtonsoft.Json.dll</HintPath>
             <Private>false</Private>
         </Reference>
+    </ItemGroup>
+
+    <ItemGroup>
+        <!--
+          THE TYPEFACE, COMPILED IN.
+          
+          Embedded rather than copied beside the DLL: a font next to the assembly is a font that goes
+          missing when somebody moves the folder, and the window would silently fall back to
+          Dalamud's. Inter, SIL Open Font License, licence file shipped with it.
+
+          The resource names these produce are AutoRezzer.fonts.<file>, which is what UI/Fonts.cs
+          asks for. Renaming the folder renames the resource.
+        -->
+        <EmbeddedResource Include="fonts\Inter-Regular.ttf" />
+        <EmbeddedResource Include="fonts\Inter-SemiBold.ttf" />
+        <EmbeddedResource Include="fonts\Inter-Bold.ttf" />
+
+        <!-- The window draws its own title bar, so the icon travels inside the DLL:
+             the packager does not put images/ into the release zip. -->
+        <EmbeddedResource Include="images\icon.png" />
     </ItemGroup>
 
     <ItemGroup>

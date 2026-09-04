@@ -26,6 +26,15 @@ namespace AutoRezzer.Core
 
         private long lastPressTick;
 
+        /// <summary>
+        /// When the Raise status was first seen on us, so the wait has something to count from.
+        ///
+        /// Zero means "not currently holding one". Reset the moment the status goes, so a second
+        /// death in the same fight waits its own full delay rather than inheriting the first one's
+        /// head start.
+        /// </summary>
+        private long raisePendingSince;
+
         /// <summary>The prompt does not vanish the instant it is answered, so without a floor this
         /// would press the same button several times before the addon closed. Harmless but noisy,
         /// and noise at the packet level is the thing worth not generating.</summary>
@@ -55,20 +64,22 @@ namespace AutoRezzer.Core
         /// The Raise status exists only between somebody's cast landing and you answering the
         /// prompt. In that window there is exactly one question the game asks a corpse, and this is
         /// it. Outside that window nothing here touches the dialog at all.
+        ///
+        /// Returns true only on the frame the button is actually pressed. Waiting out the delay is
+        /// not "handled": the tick has to carry on so the rest of the plugin keeps working while a
+        /// corpse counts down.
         /// ─────────────────────────────────────────────────────────────────
         /// </summary>
         public unsafe bool Tick()
         {
-            if (!config.AcceptRaise)
-                return false;
-
             long now = Environment.TickCount64;
-            if (now - lastPressTick < PressFloorMs)
-                return false;
 
             var me = objectTable.LocalPlayer;
             if (me == null || !me.IsDead)
+            {
+                raisePendingSince = 0;
                 return false;
+            }
 
             bool raisePending = false;
             foreach (var status in me.StatusList)
@@ -81,6 +92,33 @@ namespace AutoRezzer.Core
             }
 
             if (!raisePending)
+            {
+                raisePendingSince = 0;
+                return false;
+            }
+
+            // ── THE CLOCK STARTS WHERE THE STATUS DOES, NOT WHERE THE SETTING IS READ ──
+            //
+            // Stamped before the setting is consulted so that switching acceptance on midway
+            // through being dead does not restart the wait, and so that turning the delay down while
+            // lying there takes effect against the time already served rather than against zero.
+            if (raisePendingSince == 0)
+                raisePendingSince = now;
+
+            if (!config.AcceptRaise)
+                return false;
+
+            if (now - lastPressTick < PressFloorMs)
+                return false;
+
+            // ── THE WAIT ──
+            //
+            // The reason it exists is the wipe. Standing up the instant somebody casts on you puts
+            // you back into the mechanic that killed you, with Weakness and a sliver of health, and
+            // spends their raise for nothing. Zero by default, because outside a wipe the right
+            // answer is always "yes, now".
+            long waitMs = (long)(Math.Clamp(config.AcceptRaiseDelaySeconds, 0f, Configuration.AcceptDelayCeiling) * 1000f);
+            if (now - raisePendingSince < waitMs)
                 return false;
 
             // GetAddonByName hands back a wrapper now rather than a raw pointer; IsVisible is on
@@ -94,6 +132,7 @@ namespace AutoRezzer.Core
                 return false;
 
             lastPressTick = now;
+            raisePendingSince = 0;
             _ = addon->FireCallbackInt(0);
             config.RecordAcceptedRaise();
             saveConfig();

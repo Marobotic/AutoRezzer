@@ -109,7 +109,27 @@ namespace AutoRezzer.Core
         /// noise. The rest are the states where a swap either cannot happen or would cancel
         /// something the player was doing.
         /// </summary>
-        public bool CanSwitchNow()
+        public bool CanSwitchNow() => CanSwitchOnceQuiet() && !condition[ConditionFlag.Casting];
+
+        /// <summary>
+        /// The same question minus the one blocker that stopping a rotation actually clears.
+        ///
+        /// ── WHY THE TWO ARE SEPARATE ──────────────────────────────────────
+        /// Casting is different in kind from everything else on the list. In combat is a fact about
+        /// the fight and no amount of pausing changes it; mid-cast, three hundred milliseconds from
+        /// now, is a fact about Rotation Solver, and pausing Rotation Solver is precisely what ends
+        /// it.
+        ///
+        /// The caller needs both, and needs them in this order: pausing on CanSwitchNow alone
+        /// deadlocks - RSR is casting, so the switch is refused, so nothing pauses RSR, so it is
+        /// still casting - while pausing on nothing at all was the old bug, where a Gunbreaker in a
+        /// raid lost their rotation for a gearset change the game was never going to allow.
+        ///
+        /// So this is the "worth interrupting a rotation for" question, and CanSwitchNow is the
+        /// "the game will take it this instant" one.
+        /// ─────────────────────────────────────────────────────────────────
+        /// </summary>
+        public bool CanSwitchOnceQuiet()
         {
             var me = objectTable.LocalPlayer;
             if (me == null || me.IsDead)
@@ -117,13 +137,44 @@ namespace AutoRezzer.Core
 
             return !condition[ConditionFlag.InCombat]
                    && !condition[ConditionFlag.BetweenAreas]
-                   && !condition[ConditionFlag.Casting]
                    && !condition[ConditionFlag.Occupied]
                    && !condition[ConditionFlag.Occupied33]
                    && !condition[ConditionFlag.Occupied38]
                    && !condition[ConditionFlag.Mounted]
                    && !condition[ConditionFlag.Unconscious]
                    && !condition[ConditionFlag.InDutyQueue];
+        }
+
+        /// <summary>
+        /// What level a job is on this character, without being on it.
+        ///
+        /// Needed because the Red Mage detour has to know whether Red Mage can actually rez before
+        /// it takes anybody's gear off. Verraise unlocks at 64, so swapping a level 40 Red Mage in
+        /// buys a gearset change and a job that still cannot do the thing.
+        /// </summary>
+        public static unsafe int LevelOfJob(uint job, IDataManager dataManager)
+        {
+            try
+            {
+                var sheet = dataManager.GetExcelSheet<Lumina.Excel.Sheets.ClassJob>();
+                if (sheet == null || !sheet.TryGetRow(job, out var row))
+                    return 0;
+
+                sbyte slot = row.ExpArrayIndex;
+                if (slot < 0)
+                    return 0;
+
+                var state = FFXIVClientStructs.FFXIV.Client.Game.UI.PlayerState.Instance();
+                if (state == null)
+                    return 0;
+
+                var levels = state->ClassJobLevels;
+                return slot >= levels.Length ? 0 : levels[slot];
+            }
+            catch (Exception)
+            {
+                return 0;
+            }
         }
 
         /// <summary>The job a gearset will put you on, or 0 if it is not a real gearset.</summary>
@@ -138,6 +189,57 @@ namespace AutoRezzer.Core
 
             var entry = module->GetGearset(gearsetId);
             return entry == null ? 0u : entry->ClassJob;
+        }
+
+        /// <summary>
+        /// One entry per JOB that this character can actually rez on, with the gearset to get there.
+        ///
+        /// ── THREE FILTERS, AND EVERY ONE OF THEM REMOVES A DEAD OPTION ────
+        /// Deduplicated by job, because three White Mage gearsets are one choice presented three
+        /// times: the picker is answering "which job should I become", and the gearset is the
+        /// mechanism, not the question. The first one found wins, which is also what the Red Mage
+        /// route has always done.
+        ///
+        /// Filtered by level, because a Red Mage at 40 has no Verraise and a gearset that puts you
+        /// on one is a gearset that puts you in front of a body you still cannot pick up.
+        ///
+        /// And filtered by existing at all, which is what listing gearsets rather than jobs already
+        /// gives us: a job with no gearset is a job the game has no verb for becoming.
+        /// </summary>
+        public static unsafe List<(int Id, string Name, uint Job)> RezJobChoices(IDataManager dataManager)
+        {
+            var byJob = new Dictionary<uint, (int, string, uint)>();
+
+            foreach (var (id, name, job) in RaiseCapableGearsets())
+            {
+                if (byJob.ContainsKey(job))
+                    continue;
+
+                if (LevelOfJob(job, dataManager) < RezIds.RaiseLevelFor(job))
+                    continue;
+
+                byJob[job] = (id, name, job);
+            }
+
+            return new List<(int, string, uint)>(byJob.Values);
+        }
+
+        /// <summary>
+        /// Whether this character could rez on anything at all.
+        ///
+        /// Levels only, deliberately: a White Mage with no gearset saved still rezzes perfectly well
+        /// while they are playing White Mage. This answers "is rezzing possible for this character",
+        /// which is what decides whether the window shows any rezzing settings.
+        /// </summary>
+        public static bool CanRezOnAnyJob(IDataManager dataManager)
+        {
+            foreach (uint job in RezIds.RaisingJobs)
+            {
+                if (LevelOfJob(job, dataManager) >= RezIds.RaiseLevelFor(job))
+                    return true;
+            }
+
+            return false;
         }
 
         /// <summary>Every gearset that would put you on something able to raise, for the picker.</summary>

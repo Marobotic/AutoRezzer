@@ -34,8 +34,9 @@ namespace AutoRezzer.Core
     ///   - IsDead alone is not enough; CurrentHp must be 0 and the object must be targetable
     ///   - line of sight has to be raycast, because the game will refuse the cast otherwise
     ///
-    /// What is NOT theirs is the enemy-proximity rule. RotationSolver has no mob-avoidance logic of
-    /// any kind - one unrelated config slider in 107,000 lines - so IsBodySafeToRaise below is new.
+    /// There used to be an enemy-proximity rule here as well, and it is gone. It shipped disabled,
+    /// stayed disabled, and any radius large enough to mean anything declined to raise anybody at
+    /// all in the content this plugin is for, where something alive is always nearby.
     /// ─────────────────────────────────────────────────────────────────────
     /// </summary>
     internal sealed class RezTargeting
@@ -71,23 +72,16 @@ namespace AutoRezzer.Core
         /// standing on the body" comes from the sweep, and the sweep clears its own reason on every
         /// pass. Sharing one field meant the sweep wiped the job reason a fraction of a second after
         /// CanRaise wrote it, so the window flickered between the explanation and nothing at all.
+        ///
+        /// The third kind - "there is a body, this job could raise it, and the cast still cannot go
+        /// out" - is NOT here. It belongs to RezExecutor.HoldReason, because it is the executor's
+        /// rules that decide it: MP, Swiftcast, Dualcast. Answering it from two places is how the
+        /// MP message and the MP check drifted apart the first time.
         /// </summary>
-        public string LastReason
-        {
-            get
-            {
-                if (!string.IsNullOrEmpty(jobReason))
-                    return jobReason;
-
-                // MP before the sweep's own reason: "not enough MP" is the one that explains why
-                // nothing is happening to a body the plugin has otherwise decided it likes.
-                return string.IsNullOrEmpty(mpReason) ? holdReason : mpReason;
-            }
-        }
+        public string LastReason => string.IsNullOrEmpty(jobReason) ? holdReason : jobReason;
 
         private string jobReason = string.Empty;
         private string holdReason = string.Empty;
-        private string mpReason = string.Empty;
 
         /// <summary>What the last sweep saw. Refreshed every tick, whatever the outcome.</summary>
         public Surroundings LastSurroundings { get; private set; }
@@ -130,59 +124,20 @@ namespace AutoRezzer.Core
             uint action = RezIds.RaiseActionFor(job);
             if (action == 0)
             {
-                jobReason = "This job cannot raise.";
+                jobReason = "No rez on this job";
                 return false;
             }
 
             int need = RezIds.RaiseLevelFor(job);
             if (me.Level < need)
             {
-                jobReason = $"Level {me.Level}; this job raises from {need}.";
+                jobReason = $"Needs level {need} to rez";
                 return false;
             }
 
             raiseAction = action;
             jobReason = string.Empty;
             return true;
-        }
-
-        /// <summary>
-        /// Whether there is enough MP to see a raise through, and whether it is worth interrupting
-        /// anything to try.
-        ///
-        /// ASKED BEFORE ROTATION SOLVER IS TOUCHED, which is the whole point of it being a separate
-        /// question rather than a check inside the cast. Pausing somebody's rotation and then
-        /// failing to raise is the worst of both: they lose the GCD and nobody gets up. So the
-        /// floor is consulted while the plugin is still deciding whether to get involved.
-        ///
-        /// Red Mage without Dualcast or Swiftcast has to buy the proc with Vercure first, so its
-        /// floor is the raise plus Vercure. Occult Raise is free and skips this entirely.
-        /// </summary>
-        public bool HasMpForRaise(uint raiseAction)
-        {
-            mpReason = string.Empty;
-
-            if (RezIds.IsOccult(raiseAction))
-                return true;
-
-            var me = objectTable.LocalPlayer;
-            if (me == null)
-                return false;
-
-            int need = config.MinimumMpForRaise;
-
-            if (raiseAction == RezIds.Verraise
-                && !HasStatus(me, RezIds.DualcastStatus)
-                && !HasStatus(me, RezIds.SwiftcastStatus))
-            {
-                need += RezIds.VercureMpCost;
-            }
-
-            if (me.CurrentMp >= need)
-                return true;
-
-            mpReason = $"Holding: {me.CurrentMp:N0} MP, needs {need:N0}.";
-            return false;
         }
 
         /// <summary>
@@ -255,9 +210,6 @@ namespace AutoRezzer.Core
                 if (!HasBeenDeadLongEnough(body, now))
                     continue;
 
-                if (!IsBodySafeToRaise(body))
-                    continue;
-
                 if (!CanSee(body))
                     continue;
 
@@ -273,7 +225,7 @@ namespace AutoRezzer.Core
             SweepStaleDeaths(now);
 
             if (best == null && sawSomeone && string.IsNullOrEmpty(holdReason))
-                holdReason = "Someone is down, but not safe or not reachable yet.";
+                holdReason = "Can't reach them";
             else if (best != null)
                 holdReason = string.Empty;
 
@@ -300,9 +252,6 @@ namespace AutoRezzer.Core
             if (HasStatus(body, RezIds.RaisePending))
                 return false;
 
-            if (!config.RaiseStrangers && !IsPartyOrAlliance(body))
-                return false;
-
             if (!deadSince.ContainsKey(body.GameObjectId))
                 deadSince[body.GameObjectId] = now;
 
@@ -315,77 +264,6 @@ namespace AutoRezzer.Core
                 return false;
 
             return now - since >= (long)(config.RaiseDelaySeconds * 1000f);
-        }
-
-        // ══════════════════════════════════════════════════════════
-        //  THE MOB RULE  (not from RSR - it has none)
-        // ══════════════════════════════════════════════════════════
-
-        /// <summary>
-        /// Whether raising this body would drop somebody into a fight.
-        ///
-        /// A raise puts a player back on their feet with a sliver of health, no buffs and Weakness.
-        /// Doing that inside a pack that is still up is how one death becomes two: they stand, the
-        /// pack notices, and the person who raised them is next. So a body with anything hostile
-        /// standing on it is left where it is until the area around it is clear.
-        ///
-        /// ENGAGEMENT IS NOT CHECKED, deliberately. "Is this enemy in combat with somebody" reads
-        /// well and behaves badly: mid-pull an enemy flickers in and out of combat, and a rule that
-        /// samples that on one frame will happily raise into a pack that is three seconds from
-        /// resetting onto the new arrival. Proximity is the blunt version and it is the one that
-        /// does not get people killed.
-        /// </summary>
-        private bool IsBodySafeToRaise(IPlayerCharacter body)
-        {
-            float radius = config.EnemyNearBodyYalms;
-            if (radius <= 0f)
-                return true;
-
-            foreach (var obj in objectTable)
-            {
-                if (obj is not IBattleNpc npc)
-                    continue;
-
-                if (npc.IsDead || npc.CurrentHp == 0 || !npc.IsTargetable)
-                    continue;
-
-                // Cheap test first: most objects in a busy zone are nowhere near, and asking the
-                // game about every one of them is the expensive half.
-                if (Vector3.Distance(npc.Position, body.Position) > radius)
-                    continue;
-
-                if (!IsHostile(npc))
-                    continue;
-
-                holdReason = "Holding: enemies are standing on the body.";
-                return false;
-            }
-
-            return true;
-        }
-
-        /// <summary>
-        /// Whether the game would let us attack this thing - which is the same question as whether
-        /// it is an enemy, asked in the one way that is always right.
-        ///
-        /// Ported from RotationSolverReborn's IsEnemy. BattleNpcKind looks like the obvious answer
-        /// and is not: friendly NPCs, striking dummies and escort targets all enumerate the same way
-        /// real enemies do, and treating a quest NPC as a threat would mean never raising anybody
-        /// standing near one.
-        /// </summary>
-        private static unsafe bool IsHostile(IBattleNpc npc)
-        {
-            try
-            {
-                return FFXIVClientStructs.FFXIV.Client.Game.ActionManager
-                    .CanUseActionOnTarget(RezIds.Blizzard, (FFXIVClientStructs.FFXIV.Client.Game.Object.GameObject*)npc.Address);
-            }
-            catch (Exception)
-            {
-                // If the game will not say, assume hostile: the safe failure for a rule whose whole
-                // job is deciding when NOT to cast.
-                return true;
-            }
         }
 
         // ══════════════════════════════════════════════════════════
@@ -455,10 +333,6 @@ namespace AutoRezzer.Core
             return false;
         }
 
-        private static bool IsPartyOrAlliance(IPlayerCharacter body)
-            => body.StatusFlags.HasFlag(Dalamud.Game.ClientState.Objects.Enums.StatusFlags.PartyMember)
-               || body.StatusFlags.HasFlag(Dalamud.Game.ClientState.Objects.Enums.StatusFlags.AllianceMember);
-
         /// <summary>Drops bodies nobody is tracking any more, so the dictionary cannot grow for a
         /// whole session on a busy zone.</summary>
         private void SweepStaleDeaths(long now)
@@ -486,7 +360,6 @@ namespace AutoRezzer.Core
             losCache.Clear();
             jobReason = string.Empty;
             holdReason = string.Empty;
-            mpReason = string.Empty;
             LastSurroundings = default;
             LastTargetName = string.Empty;
         }

@@ -5,7 +5,7 @@
   },
   "projects": {
     "/home/maro/Documents/GitHub/AutoRezzer/AutoRezzer.csproj": {
-      "version": "1.1.0",
+      "version": "1.4.0",
       "restore": {
         "projectUniqueName": "/home/maro/Documents/GitHub/AutoRezzer/AutoRezzer.csproj",
         "projectName": "AutoRezzer",

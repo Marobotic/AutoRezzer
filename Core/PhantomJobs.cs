@@ -29,6 +29,7 @@ namespace AutoRezzer.Core
     /// </summary>
     internal sealed class PhantomJobs
     {
+        private readonly Configuration config;
         private readonly IDataManager dataManager;
         private readonly ICondition condition;
         private readonly IPluginLog log;
@@ -55,8 +56,9 @@ namespace AutoRezzer.Core
         private long combatClearedAt;
         private long lastChangeAttempt;
 
-        public PhantomJobs(IDataManager dataManager, ICondition condition, IPluginLog log)
+        public PhantomJobs(Configuration config, IDataManager dataManager, ICondition condition, IPluginLog log)
         {
+            this.config = config;
             this.dataManager = dataManager;
             this.condition = condition;
             this.log = log;
@@ -98,7 +100,12 @@ namespace AutoRezzer.Core
             }
         }
 
-        /// <summary>The level of a phantom job by its sheet row, or 0.</summary>
+        /// <summary>
+        /// The level of a phantom job by its sheet row, or 0.
+        ///
+        /// Live inside the zone, remembered outside it. See Configuration.PhantomJobLevels for why
+        /// the fallback has to exist: the director that holds these does not exist in Limsa.
+        /// </summary>
         public unsafe int LevelOf(int jobRow)
         {
             if (jobRow < 0)
@@ -107,18 +114,63 @@ namespace AutoRezzer.Core
             try
             {
                 var state = PublicContentOccultCrescent.GetState();
-                if (state == null)
-                    return 0;
+                if (state != null)
+                {
+                    // Bounds-checked against the array rather than against 24: the array grows when
+                    // they add phantom jobs, and a hardcoded length is a buffer overrun waiting for
+                    // a patch.
+                    var levels = state->SupportJobLevels;
+                    int live = jobRow >= levels.Length ? 0 : levels[jobRow];
 
-                // Bounds-checked against the array rather than against 24: the array grows when they
-                // add phantom jobs, and a hardcoded length is a buffer overrun waiting for a patch.
-                var levels = state->SupportJobLevels;
-                return jobRow >= levels.Length ? 0 : levels[jobRow];
+                    if (live > 0)
+                        return live;
+                }
             }
             catch (Exception)
             {
-                return 0;
             }
+
+            return config.PhantomJobLevels.TryGetValue(jobRow, out int remembered) ? remembered : 0;
+        }
+
+        /// <summary>
+        /// Writes the levels down while they are readable. Called from the tick inside the zone.
+        ///
+        /// Returns whether anything changed, so the caller only pays for a config write when there
+        /// is something new to save rather than once every two hundred milliseconds.
+        /// </summary>
+        public unsafe bool RememberLevels()
+        {
+            if (!InOccultCrescent)
+                return false;
+
+            bool changed = false;
+
+            try
+            {
+                var state = PublicContentOccultCrescent.GetState();
+                if (state == null)
+                    return false;
+
+                var levels = state->SupportJobLevels;
+                for (int row = 0; row < levels.Length; row++)
+                {
+                    int level = levels[row];
+                    if (level <= 0)
+                        continue;
+
+                    if (config.PhantomJobLevels.TryGetValue(row, out int known) && known == level)
+                        continue;
+
+                    config.PhantomJobLevels[row] = level;
+                    changed = true;
+                }
+            }
+            catch (Exception)
+            {
+            }
+
+            return changed;
         }
 
         /// <summary>The equipped phantom job's level, or 0.</summary>
@@ -133,7 +185,7 @@ namespace AutoRezzer.Core
         public bool CanRaiseAs(int jobRow)
         {
             int need = RezIds.PhantomRaiseLevelFor(jobRow);
-            return need > 0 && InOccultCrescent && LevelOf(jobRow) >= need;
+            return need > 0 && LevelOf(jobRow) >= need;
         }
 
         /// <summary>
@@ -143,7 +195,7 @@ namespace AutoRezzer.Core
         /// mid-run, and a cached "yes" would have the plugin aiming an action it no longer owns at
         /// every body it saw.
         /// </summary>
-        public bool CanOccultRaise => CanRaiseAs(CurrentJobRow);
+        public bool CanOccultRaise => InOccultCrescent && CanRaiseAs(CurrentJobRow);
 
         /// <summary>The phantom raise available right now, or 0.</summary>
         public uint CurrentRaiseAction
@@ -218,6 +270,22 @@ namespace AutoRezzer.Core
         /// .InCombat has already gone false, and ChangeSupportJob reports nothing when it is refused.
         /// </summary>
         public bool CanChangeJobNow()
+            => CanChangeJobOnceQuiet()
+               && !condition[ConditionFlag.Casting]
+               && !condition[ConditionFlag.Casting87];
+
+        /// <summary>
+        /// The same question minus casting - the one blocker that pausing a rotation clears.
+        ///
+        /// See the long note on JobSwitcher.CanSwitchOnceQuiet; the split is there for the same
+        /// reason and the caller uses the pair the same way. This is "worth stopping somebody's
+        /// rotation for", CanChangeJobNow is "the game will take it this instant".
+        ///
+        /// The post-combat settle stays on THIS side of the line deliberately. It is four seconds of
+        /// the game refusing regardless of what anybody is casting, and pausing early would only buy
+        /// four seconds of switched-off rotation to look at.
+        /// </summary>
+        public bool CanChangeJobOnceQuiet()
         {
             bool inCombat = condition[ConditionFlag.InCombat];
             if (wasInCombat && !inCombat)
@@ -233,8 +301,6 @@ namespace AutoRezzer.Core
 
             return !condition[ConditionFlag.BetweenAreas]
                    && !condition[ConditionFlag.BetweenAreas51]
-                   && !condition[ConditionFlag.Casting]
-                   && !condition[ConditionFlag.Casting87]
                    && !condition[ConditionFlag.Jumping]
                    && !condition[ConditionFlag.Jumping61]
                    && !condition[ConditionFlag.Occupied]

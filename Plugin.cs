@@ -30,6 +30,7 @@ namespace AutoRezzer
         private readonly IObjectTable objectTable;
         private readonly ICondition condition;
         private readonly IChatGui chatGui;
+        private readonly IDataManager dataManager;
         private readonly IPluginLog log;
 
         private readonly Configuration config;
@@ -40,6 +41,10 @@ namespace AutoRezzer
         private readonly RsrManager rsrManager;
         private readonly PhantomJobs phantom;
         private readonly PhantomJobSwitcher phantomSwitcher;
+        private readonly Zone zone;
+        private readonly Fonts fonts;
+        private readonly Icons icons;
+        private readonly StatusReporter status;
         private readonly IDtrBarEntry dtr;
         private readonly WindowSystem windows = new("AutoRezzer");
         private readonly ConfigWindow configWindow;
@@ -55,6 +60,37 @@ namespace AutoRezzer
         private const long TickMs = 200;
         private long lastTick;
 
+        /// <summary>
+        /// Whether the plugin was allowed to act on the previous tick.
+        ///
+        /// Kept so the moment it STOPS being allowed can be noticed. Walking into a sanctuary is not
+        /// the same event as the tick after it: the first one has a gearset trip to abandon, a
+        /// Rotation Solver to hand back and a server bar entry to repaint, and every one after it
+        /// has nothing to do at all.
+        /// </summary>
+        private bool wasActive;
+
+        /// <summary>
+        /// What the server bar is currently saying, so it is only repainted when that changes.
+        ///
+        /// ── THE BAR AND THE WINDOW MUST ANSWER THE SAME QUESTION ──────────
+        /// They did not. The bar asked StandDownReason, which knows about sanctuaries and the
+        /// content switches; the window asked the status reporter, which also knows whether this
+        /// character has any route to a rez at all. A Gunbreaker with no rez gearset therefore read
+        /// "Rez: on" on the bar and "Paused" in the window at the same moment, which is the plugin
+        /// contradicting itself in two places a foot apart.
+        ///
+        /// Both now come from BarStateNow, and the word is the same in both: paused is paused.
+        /// </summary>
+        private enum BarState
+        {
+            Off,
+            Paused,
+            On,
+        }
+
+        private BarState barState = BarState.Off;
+
         public Plugin(
             IDalamudPluginInterface pluginInterface,
             ICommandManager commandManager,
@@ -64,6 +100,7 @@ namespace AutoRezzer
             ICondition condition,
             IDataManager dataManager,
             IGameGui gameGui,
+            ITextureProvider textureProvider,
             IDtrBar dtrBar,
             IChatGui chatGui,
             IPluginLog log)
@@ -75,6 +112,7 @@ namespace AutoRezzer
             this.objectTable = objectTable;
             this.condition = condition;
             this.chatGui = chatGui;
+            this.dataManager = dataManager;
             this.log = log;
 
             config = pluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
@@ -82,16 +120,22 @@ namespace AutoRezzer
 
             void Save() => pluginInterface.SavePluginConfig(config);
 
-            phantom = new PhantomJobs(dataManager, condition, log);
+            phantom = new PhantomJobs(config, dataManager, condition, log);
             phantomSwitcher = new PhantomJobSwitcher(phantom, config, log);
             targeting = new RezTargeting(clientState, objectTable, config, phantom);
             executor = new RezExecutor(objectTable, condition, log, config, Save);
             accepter = new RaiseAccepter(objectTable, gameGui, log, config, Save);
             switcher = new JobSwitcher(objectTable, condition, log, config);
-            rsrManager = new RsrManager(pluginInterface, log, config);
+            rsrManager = new RsrManager(pluginInterface, log);
+            zone = new Zone(log, phantom);
+
+            fonts = new Fonts(pluginInterface, log);
+            icons = new Icons(textureProvider);
+            status = new StatusReporter(objectTable, dataManager, config, targeting,
+                executor, switcher, phantomSwitcher, phantom, zone);
 
             configWindow = new ConfigWindow(
-                config, targeting, executor, switcher, rsrManager, phantom, phantomSwitcher,
+                config, dataManager, phantom, phantomSwitcher, status, fonts, icons,
                 setEnabled: SetEnabled,
                 save: Save);
             windows.AddWindow(configWindow);
@@ -118,6 +162,7 @@ namespace AutoRezzer
             // an off switch, not a window. Clicking the entry toggles; the text says which way it is.
             dtr = dtrBar.Get("AutoRezzer");
             dtr.OnClick = _ => Toggle();
+            barState = config.Enabled ? BarState.On : BarState.Off;
             RefreshDtr();
 
             VerifyIds(dataManager);
@@ -154,6 +199,8 @@ namespace AutoRezzer
                     (RezIds.Vercure, "Vercure"),
                     (RezIds.OccultRaise, "Occult Raise"),
                     (RezIds.Revive, "Revive"),
+                    (RezIds.ThinAir, "Thin Air"),
+                    (RezIds.LucidDreaming, "Lucid Dreaming"),
                 })
                 {
                     if (!sheet.TryGetRow(id, out var row))
@@ -189,15 +236,53 @@ namespace AutoRezzer
             // Off means off. "Accept raises cast on me" is still its own setting; it is simply a
             // setting inside a plugin that is running.
             //
-            // A switch still in flight keeps the tick alive, or turning everything off halfway
-            // through a job change would strand the trip home in whatever state it was in.
-            if (!config.Enabled && !switcher.Busy && !phantomSwitcher.Busy)
-                return;
-
             long now = Environment.TickCount64;
             if (now - lastTick < TickMs)
                 return;
             lastTick = now;
+
+            // ── THE MASTER SWITCH IS THE FIRST THING ASKED, AND IT IS ABSOLUTE ──
+            //
+            // Off means the plugin is inert. No sweep of the object table, no rez, no accepting one
+            // cast on you, nothing said to Rotation Solver, no reading of the world at all. Every
+            // line below this point belongs to a plugin that is running.
+            //
+            // The single exception is a job change already in flight, which is walked home rather
+            // than abandoned. That is not the plugin still working; it is the plugin declining to
+            // leave somebody stood in a healer's gearset because they reached for the switch a
+            // second after it started changing their clothes.
+            if (!config.Enabled)
+            {
+                if (!switcher.Busy && !phantomSwitcher.Busy)
+                    return;
+
+                try
+                {
+                    DriveSwitchersHome();
+                }
+                catch (Exception ex)
+                {
+                    log.Error($"[AutoRezzer] Could not finish the job change: {ex.Message}");
+                }
+
+                return;
+            }
+
+            // ── WATCHING THE WORLD IS NOT ACTING ON IT ────────────────────
+            //
+            // Ahead of everything else the plugin does, but behind the switch, because the switch
+            // governs everything. This records nothing but what the game is already showing on
+            // screen, changes nothing and casts nothing; it exists because the client publishes
+            // phantom job levels through the Crescent's own instance director and nowhere else, so
+            // the moment you zone out they are gone.
+            try
+            {
+                RememberPhantomJobs();
+            }
+            catch (Exception ex)
+            {
+                log.Debug($"[AutoRezzer] Could not record phantom job levels: {ex.Message}");
+            }
 
             try
             {
@@ -210,21 +295,95 @@ namespace AutoRezzer
             }
         }
 
+        /// <summary>
+        /// Writes down the phantom job levels while the game is willing to say what they are.
+        ///
+        /// ── THE CLIENT ONLY KNOWS THIS INSIDE THE CRESCENT ────────────────
+        /// Not a guess: SupportJobLevels exists in exactly one structure in the whole client,
+        /// OccultCrescentState, reached only through the Crescent's instance director. That director
+        /// is created on entering the zone and destroyed on leaving, so from anywhere else in the
+        /// game there is genuinely nothing to read. UIModule's MKDSupportJobModule sounds like the
+        /// answer and is not: it stores which action each phantom job has on its bar, not levels.
+        ///
+        /// So the levels are copied out on the way past, and read back from the config whenever the
+        /// live ones are absent. A remembered level cannot drift far: it is refreshed every tick in
+        /// the zone, and the only way to raise one is to be in there raising it.
+        /// </summary>
+        private void RememberPhantomJobs()
+        {
+            if (!phantom.InOccultCrescent)
+                return;
+
+            bool learned = phantom.RememberLevels();
+
+            if (!config.SeenOccultCrescent)
+            {
+                config.SeenOccultCrescent = true;
+                learned = true;
+            }
+
+            // Only written when something actually changed. Otherwise this is a config file save
+            // five times a second for as long as somebody is in the zone.
+            if (learned)
+                pluginInterface.SavePluginConfig(config);
+        }
+
         private void Tick()
         {
             if (!clientState.IsLoggedIn || objectTable.LocalPlayer == null)
                 return;
 
-            if (!config.Enabled)
+            // Noticed once, remembered forever: the window has no other way to know this content
+            // exists for this character when they are standing anywhere else in the game.
+            // Repainted from the same answer the window draws, and only when it changes. Computed
+            // before the gate below, or the bar would freeze on whatever it said last as soon as
+            // the plugin stopped ticking past this point.
+            var wantBar = BarStateNow();
+            if (wantBar != barState)
             {
-                // Driven home first. Switching the plugin off is not a reason to leave somebody
-                // wearing a healer's gearset or levelling a phantom job they did not pick - both
-                // machines are told nobody needs raising, which walks them through Returning.
-                //
-                // This is the ONLY thing that still happens with the switch off, and it is not a
-                // feature - it is finishing something the plugin already started.
+                barState = wantBar;
+                RefreshDtr();
+            }
+
+            // ── ALLOWED TO ACT AT ALL? ──
+            //
+            // The switch and the two zone rules, answered as one question, because everything below
+            // this line behaves identically whichever of them said no.
+            bool active = config.Enabled && StandDownReason().Length == 0;
+
+            if (active != wasActive)
+            {
+                wasActive = active;
+
+                // The EDGE, not the state. Aborting a gearset trip every tick would re-enter
+                // Returning forever and the trip would never finish.
+                if (!active)
+                    StandDown();
+            }
+
+            if (!active)
+            {
+                // Driven home first. Being switched off, or having walked into a sanctuary, is not
+                // a reason to leave somebody wearing a healer's gearset or levelling a phantom job
+                // they did not pick; both machines are told nobody needs raising, which walks them
+                // through Returning.
                 DriveSwitchersHome();
                 rsrManager.Resume();
+
+                // ── ACCEPTING SURVIVES THE CONTENT SWITCHES ───────────────
+                //
+                // The four switches exist to stop the plugin INTERFERING: pausing a rotation,
+                // taking somebody's gear off, choosing targets. Answering the prompt that appears
+                // on your own corpse interferes with nothing and costs nothing.
+                //
+                // Gating it too produced a trap with no way out: a Warrior with dungeons switched
+                // off would silently stop accepting rezzes in a dungeon, and the setting that
+                // caused it is one this window now hides from them, because no job they own can
+                // cast a rez.
+                //
+                // The MASTER switch is a different matter and has already had its say: nothing
+                // reaches this line while it is off.
+                _ = accepter.Tick();
                 return;
             }
 
@@ -232,6 +391,26 @@ namespace AutoRezzer
             // else this tick could usefully do.
             if (accepter.Tick())
                 return;
+
+            // ── NO ROUTE TO A REZ MEANS NO SWEEP ──
+            //
+            // Asked BEFORE the object table is walked, not after. A Gunbreaker with no rez gearset
+            // and no phantom job cannot pick anybody up, will not be able to in a minute, and
+            // sweeping thirty yalms of players to establish that is work done to reach a conclusion
+            // already known. Out of MP with no free phantom rez is the same dead end.
+            //
+            // It is also what stops the window claiming to watch something it is not watching for.
+            if (!status.AnyRouteToRez())
+            {
+                targeting.Reset();
+                executor.ClearHold();
+                rsrManager.Resume();
+
+                // The one thing worth doing about an empty bar: refill it. Off-GCD, so this happens
+                // with the rotation still running and nothing interrupted. See TryRestoreMp.
+                _ = executor.TryRestoreMp();
+                return;
+            }
 
             // ── One sweep, at the top, whatever happens next ──
             //
@@ -289,6 +468,9 @@ namespace AutoRezzer
 
             if (body == null)
             {
+                // Nobody down. The rotation goes back, and so does the window's explanation of why
+                // it was holding - it was about a body that is no longer there.
+                executor.ClearHold();
                 rsrManager.Resume();
                 return;
             }
@@ -296,26 +478,43 @@ namespace AutoRezzer
             // ── The ordinary path: already on a job that can do this ──
             if (canRaiseNow)
             {
-                // ── THE MP FLOOR GOES BEFORE Pause(), NOT AFTER ──
+                // ── "CAN I ACTUALLY RAISE THIS INSTANT?" GOES BEFORE Pause(), NOT AFTER ──
                 //
-                // This is the whole reason it is a separate question. Pausing Rotation Solver and
-                // then declining to cast costs the player their rotation AND leaves the body on the
-                // floor - strictly worse than never having got involved. Below the floor the plugin
-                // takes its hands off entirely and lets RSR keep working.
+                // The whole plugin turns on asking this in the right order. Pausing Rotation Solver
+                // and THEN discovering the cast cannot go out costs the player their rotation and
+                // leaves the body on the floor - strictly worse than never having got involved,
+                // because at least a plugin that does nothing leaves you fighting.
                 //
-                // Occult Raise is free, so HasMpForRaise waves it through and none of this applies.
-                if (!targeting.HasMpForRaise(raiseAction))
+                // It used to ask about MP alone, so the MP case was the only one that behaved: "only
+                // rez with Swiftcast" with Swiftcast on a fifty second cooldown paused the rotation
+                // and then stood there for the whole fifty seconds. Every reason the cast could not
+                // go out is asked here now, in one question, before anybody is interrupted.
+                if (!executor.CanRaiseThisInstant(raiseAction))
                 {
-                    // Before giving up: a phantom raise costs nothing at all, so being out of MP is
-                    // not a reason to stay on a job whose raise you cannot pay for.
-                    if (WantsPhantomSwap(out int mplessJob))
-                    {
-                        rsrManager.Pause();
-                        _ = phantomSwitcher.Begin(mplessJob);
+                    // ── TWO WAYS OUT OF A HOLD, BOTH TRIED BEFORE SETTLING IN TO WAIT ──
+                    //
+                    // A phantom raise is instant and free, so it is the answer to nearly every
+                    // reason the ordinary one is unavailable - no MP to be short of, no Swiftcast
+                    // to wait for.
+                    if (BeginPhantomSwap())
                         return;
-                    }
 
+                    // And Red Mage is the answer the "only rez with Swiftcast" hold was always
+                    // meant to have: Dualcast is instant WITHOUT spending Swiftcast, so a sixty
+                    // second cooldown stops being the thing standing between a body and a raise.
+                    // That is the entire point of the setting, and the readiness check above would
+                    // otherwise have quietly locked it out of the one case it exists for.
+                    //
+                    // Only worth the trip if the MP for it is there. Changing job in order to be
+                    // short of MP as a Red Mage instead is not an escape from anything - and Red
+                    // Mage's bill is higher, because it buys Dualcast with a Vercure first.
+                    if (executor.HasMpFor(RezIds.Verraise) && BeginRedMageDetour())
+                        return;
+
+                    // HOLDING. Not paused, not switching, not casting - watching, with the player's
+                    // rotation left exactly where it was, until the thing being waited for arrives.
                     rsrManager.Resume();
+                    _ = executor.TryRestoreMp();
                     return;
                 }
 
@@ -324,7 +523,7 @@ namespace AutoRezzer
                 // The Red Mage detour, asked BEFORE the raise rather than after it fails. TryRaise
                 // failing is not a signal - it fails for a dozen transient reasons every tick - so
                 // the condition it would have to be inferred from is checked directly instead.
-                if (WantsRedMageDetour(out int rdmGearset) && switcher.Begin(rdmGearset))
+                if (BeginRedMageDetour())
                     return;
 
                 _ = Raise(body, raiseAction);
@@ -340,21 +539,143 @@ namespace AutoRezzer
             //
             // The phantom job goes first because it is strictly cheaper: instant, free, and it does
             // not take your gear off in the middle of a zone full of people.
-            if (WantsPhantomSwap(out int borrowJob))
+            //
+            // NEITHER OF THESE PAUSES ANYTHING UNLESS THE ERRAND STARTS, which is the bug that made
+            // the plugin unusable in a raid: it used to pause Rotation Solver and THEN ask for a
+            // gearset change, and the game refuses a gearset change in combat outright - so a
+            // Gunbreaker in a savage fight, standing near anybody's corpse, had their rotation
+            // switched off for a job swap that was never going to be allowed, until the body was
+            // gone. See BeginPhantomSwap for where that decision lives now.
+            if (BeginPhantomSwap())
+                return;
+
+            if (BeginGearsetSwap())
+                return;
+
+            // Nothing this plugin can do about this body from here: wrong job, no way to change it
+            // right now, and nothing worth taking anybody's rotation away for.
+            rsrManager.Resume();
+        }
+
+        // ══════════════════════════════════════════════════════════
+        //  STARTING AN ERRAND
+        // ══════════════════════════════════════════════════════════
+
+        /// <summary>
+        /// Borrows a raising phantom job if that is both wanted and possible, pausing only if it is.
+        /// Returns whether the tick is finished.
+        ///
+        /// ── PAUSE AFTER THE ERRAND STARTS, WITH ONE EXCEPTION ─────────────
+        /// Begin answers "did this actually start" and nothing is interrupted until it says yes.
+        /// The exception is the reason the exception exists: a job change is refused while a cast is
+        /// in progress, and the cast in progress is Rotation Solver's. Waiting for Begin to succeed
+        /// there is a deadlock - RSR is casting, so the change is refused, so nothing pauses RSR, so
+        /// it is still casting - and pausing is precisely what breaks it.
+        ///
+        /// Every OTHER refusal - in combat, mid-settle, wrong zone - is left alone, because pausing
+        /// a rotation does not change any of them.
+        /// ─────────────────────────────────────────────────────────────────
+        /// </summary>
+        private bool BeginPhantomSwap()
+        {
+            if (!WantsPhantomSwap(out int jobRow))
+                return false;
+
+            if (phantomSwitcher.Begin(jobRow) || CastingIsTheOnlyBlocker())
             {
                 rsrManager.Pause();
-                _ = phantomSwitcher.Begin(borrowJob);
-                return;
+                return true;
             }
 
-            if (config.RezGearsetId < 0)
+            return false;
+        }
+
+        /// <summary>The same, for the gearset trip. See the note on <see cref="BeginPhantomSwap"/>.</summary>
+        private bool BeginGearsetSwap()
+        {
+            if (config.RezGearsetId < 0 || !switcher.CanSwitchOnceQuiet())
+                return false;
+
+            if (switcher.Begin(config.RezGearsetId) || CastingIsTheOnlyBlocker())
             {
-                rsrManager.Resume();
-                return;
+                rsrManager.Pause();
+                return true;
             }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Goes and becomes a Red Mage about this, if that is both wanted and possible.
+        ///
+        /// Reached from two places - once as the escape from a hold, once as the shortcut past a
+        /// hardcast - and they arrive in different states, so the pause is here rather than at
+        /// either call site. It is idempotent, so the caller that has already paused pays nothing
+        /// for it, and the caller that has not is covered.
+        /// </summary>
+        private bool BeginRedMageDetour()
+        {
+            if (!WantsRedMageDetour(out int gearset) || !switcher.Begin(gearset))
+                return false;
 
             rsrManager.Pause();
-            _ = switcher.Begin(config.RezGearsetId);
+            return true;
+        }
+
+        /// <summary>Whether a cast in progress is the last thing standing in the way - the one
+        /// blocker on either switcher's list that pausing the rotation actually removes.</summary>
+        private bool CastingIsTheOnlyBlocker()
+            => condition[ConditionFlag.Casting] || condition[ConditionFlag.Casting87];
+
+        // ══════════════════════════════════════════════════════════
+        //  WHERE THE PLUGIN IS ALLOWED TO RUN
+        // ══════════════════════════════════════════════════════════
+
+        /// <summary>
+        /// Why the plugin is standing down right now, or an empty string when it is not.
+        ///
+        /// ── A GATE, NOT A SWITCH ──
+        /// Nothing here writes to Enabled, and that is deliberate. "Turn it off in a town and
+        /// restore it on the way out" as an actual write is a promise the plugin cannot keep: the
+        /// moment it overwrites the switch it has destroyed the thing it was going to restore, and
+        /// any manual toggle in between, or a client that closes in town, leaves the wrong answer
+        /// saved forever.
+        ///
+        /// So the switch is left exactly where the user put it and this decides whether it is being
+        /// honoured. Somebody who was off stays off; somebody who was on comes back on by itself,
+        /// because nothing was ever changed to have to be changed back.
+        ///
+        /// Returned as a sentence rather than a bool because the window and the server bar both have
+        /// to explain a plugin that is switched on and doing nothing, which otherwise looks broken.
+        /// </summary>
+        private string StandDownReason()
+        {
+            // Sanctuary first, because it cuts across all four content switches: a city is open
+            // world, the Crescent's base camp is the Crescent, and the answer is the same in both.
+            if (!config.RezInSanctuaries && zone.InSanctuary)
+                return "you're in a sanctuary";
+
+            var kind = zone.Kind;
+            if (!status.RunsHere(kind))
+                return $"{Zone.NameOf(kind)} is switched off";
+
+            return string.Empty;
+        }
+
+        /// <summary>
+        /// Everything that has to be undone the moment the plugin stops being allowed to act.
+        ///
+        /// The same list as switching it off by hand, and for the same reason: whatever it had
+        /// started, it started, and walking into a sanctuary is not an excuse to leave somebody in a
+        /// healer's gearset with their rotation switched off.
+        /// </summary>
+        private void StandDown()
+        {
+            executor.ClearHold();
+            targeting.Reset();
+            switcher.Abort();
+            phantomSwitcher.Abort();
+            rsrManager.Resume();
         }
 
         /// <summary>
@@ -391,7 +712,10 @@ namespace AutoRezzer
             if (!phantom.InOccultCrescent || phantom.CanOccultRaise)
                 return false;
 
-            if (!phantom.CanChangeJobNow())
+            // The LOOSE gate: everything the strict one asks except being mid-cast, which is the
+            // blocker pausing the rotation removes. Begin still enforces the strict one; this only
+            // decides whether the errand is worth interrupting anybody for. See BeginPhantomSwap.
+            if (!phantom.CanChangeJobOnceQuiet())
                 return false;
 
             jobRow = phantom.PickRaiser(config.PreferredPhantomRaiser);
@@ -410,8 +734,23 @@ namespace AutoRezzer
         {
             gearsetId = -1;
 
-            if (!config.OutOfCombatSwitchToRdm || condition[ConditionFlag.InCombat])
+            // ── OUT OF COMBAT ONLY, ALWAYS ──
+            // The game refuses gearset changes in a fight, so this is not a preference, it is the
+            // only window the trip can happen in.
+            if (condition[ConditionFlag.InCombat])
                 return false;
+
+            // ── NO TOGGLE, BECAUSE EVERY CONDITION BELOW IS ALREADY THE TOGGLE ──
+            //
+            // Dualcast is the only instant rez in the game that does not spend Swiftcast. This only
+            // runs out of combat, only when Swiftcast is genuinely down, only when there is a body,
+            // and only when Red Mage is past Verraise with a gearset to get there. By the time all
+            // of those are true the answer is yes, and a switch on top of them would exist only to
+            // let somebody say no to the better outcome by accident.
+            //
+            // It also covers the case the hardcast rule quietly does not: with "only in combat" on,
+            // that rule stops applying the moment the fight ends, so without this the plugin would
+            // happily stand still for eight seconds on a corpse run.
 
             // A phantom raise is already instant and already free. Swapping to Red Mage to buy an
             // instant cast we are holding for nothing would be pure ceremony.
@@ -425,10 +764,15 @@ namespace AutoRezzer
             if (executor.SwiftcastReady())
                 return false;
 
-            gearsetId = config.RdmGearsetId >= 0
-                ? config.RdmGearsetId
-                : JobSwitcher.FirstGearsetForJob(RezIds.RedMage);
+            // Verraise unlocks at 64. Below that the trip buys a gearset change and a Red Mage who
+            // still cannot rez, which is worse than the hardcast it was avoiding.
+            if (JobSwitcher.LevelOfJob(RezIds.RedMage, dataManager) < RezIds.VerraiseLevel)
+                return false;
 
+            // The first Red Mage gearset, always. There is no picker for this any more: owning one
+            // set is no choice, and owning three is a choice between three ways to cast the same
+            // Verraise.
+            gearsetId = JobSwitcher.FirstGearsetForJob(RezIds.RedMage);
             return gearsetId >= 0;
         }
 
@@ -467,9 +811,15 @@ namespace AutoRezzer
             switch (args.Trim().ToLowerInvariant())
             {
                 case "on":
+                {
                     SetEnabled(true);
-                    Echo("On.");
+
+                    // Said at the moment of switching on, because that is the moment somebody is
+                    // watching for something to happen. "On." followed by nothing happening, in a
+                    // city, with no explanation, is how a scope rule gets reported as a bug.
+                    Echo(BarStateNow() == BarState.Paused ? $"On, but paused: {PauseReason()}" : "On.");
                     break;
+                }
 
                 case "off":
                     SetEnabled(false);
@@ -509,16 +859,19 @@ namespace AutoRezzer
 
             if (!value)
             {
-                // Abort rather than Cancel on both: switching the plugin off is not a reason to
-                // leave somebody in a healer's gearset or on a phantom job they did not pick. The
-                // tick keeps running while either is busy specifically so these can finish.
-                targeting.Reset();
-                switcher.Abort();
-                phantomSwitcher.Abort();
-                rsrManager.Resume();
+                // Abort rather than Cancel inside StandDown: switching the plugin off is not a
+                // reason to leave somebody in a healer's gearset or on a phantom job they did not
+                // pick. The tick keeps running while either is busy specifically so these finish.
+                StandDown();
             }
 
+            // Cleared either way, so the next tick sees an edge rather than trusting a flag that
+            // was last written under the old switch.
+            wasActive = false;
+
             pluginInterface.SavePluginConfig(config);
+
+            barState = BarStateNow();
             RefreshDtr();
         }
 
@@ -531,13 +884,58 @@ namespace AutoRezzer
         /// out when it is assigned, and assigning the same text sixty times a second is a
         /// measurable amount of nothing.
         /// </summary>
+        /// <summary>
+        /// The one reading of "what is this plugin doing", shared by the bar and the window.
+        ///
+        /// Paused covers both kinds of standing down, because from outside they are the same thing:
+        /// the switch is on and nothing is going to happen. A sanctuary, a content switch, a job
+        /// with no rez and no way to get one, an empty MP bar. Splitting those into different words
+        /// on the bar would be describing the plumbing rather than the state.
+        /// </summary>
+        private BarState BarStateNow()
+        {
+            if (!config.Enabled)
+                return BarState.Off;
+
+            if (StandDownReason().Length > 0)
+                return BarState.Paused;
+
+            return status.AnyRouteToRez() ? BarState.On : BarState.Paused;
+        }
+
         private void RefreshDtr()
         {
-            bool on = config.Enabled;
-            dtr.Text = on ? "Rez: on" : "Rez: off";
-            dtr.Tooltip = on
-                ? "AutoRezzer is raising, and accepting raises cast on you. Click to stop."
-                : "AutoRezzer is off - nothing is raising and nothing is being accepted. Click to start.";
+            switch (barState)
+            {
+                case BarState.Off:
+                    dtr.Text = "Rez: off";
+                    dtr.Tooltip = "AutoRezzer is off. Nothing is rezzing and nothing is being "
+                                  + "accepted. Click to start.";
+                    return;
+
+                case BarState.Paused:
+                    dtr.Text = "Rez: paused";
+                    dtr.Tooltip = $"AutoRezzer is on but paused: {PauseReason()} Click to switch it off.";
+                    return;
+
+                default:
+                    dtr.Text = "Rez: on";
+                    dtr.Tooltip = "AutoRezzer is rezzing, and accepting rezzes cast on you. "
+                                  + "Click to stop.";
+                    return;
+            }
+        }
+
+        /// <summary>Why the bar says paused, as a sentence for its tooltip.</summary>
+        private string PauseReason()
+        {
+            string gate = StandDownReason();
+            if (gate.Length > 0)
+                return $"{gate}.";
+
+            return config.AcceptRaise
+                ? "nothing here can rez. Still accepting rezzes cast on you."
+                : "nothing here can rez.";
         }
 
         public void Dispose()
@@ -551,6 +949,7 @@ namespace AutoRezzer
             dtr.Remove();
             windows.RemoveAllWindows();
             rsrManager.Dispose();
+            fonts.Dispose();
         }
     }
 }

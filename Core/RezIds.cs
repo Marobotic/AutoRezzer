@@ -1,3 +1,7 @@
+using System;
+using System.Collections.Generic;
+using Dalamud.Plugin.Services;
+
 namespace AutoRezzer.Core
 {
     /// <summary>
@@ -114,6 +118,33 @@ namespace AutoRezzer.Core
         public const int VercureMpCost = 500;
 
         // ── Swiftcast ──
+        // ══════════════════════════════════════════════════════════
+        //  PAYING FOR THE REZ
+        // ══════════════════════════════════════════════════════════
+
+        /// <summary>
+        /// Thin Air. White Mage only, level 58: the next spell costs no MP at all.
+        ///
+        /// THE ONE THING THAT MAKES THE MP FLOOR NEGOTIABLE. A White Mage holding this can rez at
+        /// zero MP, so the floor is not a reason to hold and not a reason to sit out. It stacks with
+        /// Swiftcast rather than competing: Thin Air, Swiftcast, Raise is an instant free rez, and
+        /// Thin Air on its own turns a hardcast into a free one.
+        /// </summary>
+        public const uint ThinAir = 7430;
+        public const uint ThinAirStatus = 1217;
+        public const int ThinAirLevel = 58;
+
+        /// <summary>
+        /// Lucid Dreaming. Every healer from 24, and an off-GCD ability.
+        ///
+        /// OFF-GCD IS WHY THIS IS SAFE TO FIRE WHILE HOLDING. It costs no cast and no global
+        /// cooldown, so the plugin can put it up without pausing anybody's rotation and without
+        /// taking a weave slot that mattered. When the reason a body is still on the floor is an
+        /// empty MP bar, the useful thing to do is refill the bar.
+        /// </summary>
+        public const uint LucidDreaming = 7562;
+        public const int LucidDreamingLevel = 24;
+
         public const uint Swiftcast = 7561;
         public const uint SwiftcastStatus = 167;
         public const int SwiftcastLevel = 18;
@@ -153,21 +184,57 @@ namespace AutoRezzer.Core
         /// <summary>Whether an action is one of the free, instant, job-agnostic phantom raises.</summary>
         public static bool IsOccult(uint action) => action is OccultRaise or Revive;
 
-        /// <summary>A job's name, for the gearset picker.</summary>
-        public static string JobName(uint job) => job switch
+        /// <summary>
+        /// A job's name.
+        ///
+        /// ── FROM THE SHEET, NOT FROM A LIST HERE ──────────────────────────
+        /// This used to be a switch over the eight jobs that can raise, with "Job 37" as the
+        /// fallback for everything else. That was fine while the only caller was the gearset
+        /// picker, and wrong the moment the status card started naming whatever job you were on:
+        /// a Gunbreaker read as "Job 37".
+        ///
+        /// The game has all two hundred of them, capitalised and translated. Cached because the
+        /// window asks every frame.
+        /// </summary>
+        public static string JobName(uint job, IDataManager? dataManager = null)
         {
-            Conjurer => "Conjurer",
-            WhiteMage => "White Mage",
-            Arcanist => "Arcanist",
-            Summoner => "Summoner",
-            Scholar => "Scholar",
-            Astrologian => "Astrologian",
-            Sage => "Sage",
-            RedMage => "Red Mage",
-            _ => $"Job {job}",
-        };
+            if (job == 0)
+                return "No job";
+
+            if (jobNames.TryGetValue(job, out string? cached))
+                return cached;
+
+            string name = $"Job {job}";
+
+            try
+            {
+                var sheet = dataManager?.GetExcelSheet<Lumina.Excel.Sheets.ClassJob>();
+                if (sheet != null && sheet.TryGetRow(job, out var row))
+                {
+                    string sheetName = row.Name.ExtractText();
+                    if (!string.IsNullOrWhiteSpace(sheetName))
+                        name = char.ToUpperInvariant(sheetName[0]) + sheetName[1..];
+                }
+            }
+            catch (Exception)
+            {
+            }
+
+            if (dataManager != null)
+                jobNames[job] = name;
+
+            return name;
+        }
+
+        private static readonly Dictionary<uint, string> jobNames = new();
 
         /// <summary>The raise action for a job, or 0 when that job cannot raise at all.</summary>
+        /// <summary>Every job in the game with a raise, for "could this character rez at all".</summary>
+        public static readonly uint[] RaisingJobs =
+        {
+            Conjurer, WhiteMage, Arcanist, Summoner, Scholar, Astrologian, RedMage, Sage,
+        };
+
         public static uint RaiseActionFor(uint job) => job switch
         {
             Conjurer or WhiteMage => Raise,

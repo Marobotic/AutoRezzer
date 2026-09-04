@@ -1,16 +1,19 @@
 using System;
+using System.Reflection;
+using System.Runtime.Loader;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
 
 namespace AutoRezzer.Core
 {
     /// <summary>
-    /// Gets Rotation Solver Reborn out of the way for the length of a raise, and puts it back.
+    /// Gets Rotation Solver Reborn out of the way for the length of a raise, and puts it back the
+    /// way it actually was.
     ///
     /// ── WHY THIS IS NOT "TURN IT OFF, TURN IT ON" ─────────────────────────
     /// RSR has more than one "on". Off, Auto, TargetOnly, Manual, AutoDuty, Henched and PvP are all
     /// distinct states, and several of them exist precisely because another plugin is driving. The
-    /// one that matters here is Henched - rotation only, no targeting - because that is what
+    /// one that matters most is Henched - rotation only, no targeting - because that is what
     /// BOCCHI's Illegal Mode puts RSR into while it runs FATEs and critical encounters.
     ///
     /// So the naive pause/resume is actively harmful in that setup: sending Auto afterwards hands
@@ -18,11 +21,21 @@ namespace AutoRezzer.Core
     /// notice, because it only re-sends a mode when its own desired mode changes. It thinks RSR is
     /// still Henched. It is not, and now two things are choosing targets.
     ///
-    /// ── AND WHY THE ANSWER IS A SETTING RATHER THAN A READ ────────────────
-    /// RSR's IPC exposes one read - AutorotationActive(), a bool - and nothing that says which mode.
-    /// BOCCHI exposes no IPC at all. There is genuinely nothing to query, so the mode to come back
-    /// to is decided in advance: AutoDetect looks for BOCCHI among the installed plugins and picks
-    /// Henched when it is there, Auto when it is not.
+    /// ── AND WHY IT IS NOT A SETTING EITHER ────────────────────────────────
+    /// It was, and the setting was wrong every time it disagreed with reality. "Resume as Henched"
+    /// restores Henched to somebody who was in Auto with low-HP targeting, which is the same class
+    /// of bug as resuming Auto over Henched - a guess made in advance, applied to a state it never
+    /// looked at.
+    ///
+    /// RSR's IPC cannot be asked: it offers one read, AutorotationActive(), a bool. But RSR's mode
+    /// is not hidden - it is seven public statics on RotationSolver.Basic.DataCenter, set by
+    /// RSCommands.UpdateState and by nothing else - so the mode is READ off the live plugin at the
+    /// moment of pausing and sent back verbatim at the moment of resuming. Reflection into another
+    /// plugin, deliberately, because the alternative is being wrong on purpose.
+    ///
+    /// There is nothing to configure. The read answers it, and when the read fails the fallback is
+    /// Henched with BOCCHI loaded and Auto without, which is right often enough that offering a
+    /// dropdown for it only ever gave people a way to be wrong on purpose.
     ///
     /// NOTHING HERE EVER TOUCHES BOCCHI. Illegal Mode stays on; only RSR is moved, and only for as
     /// long as a body is being worked on.
@@ -35,25 +48,44 @@ namespace AutoRezzer.Core
         private const byte RsrAuto = 1;
         private const byte RsrTargetOnly = 2;
         private const byte RsrManual = 3;
+        private const byte RsrAutoDuty = 4;
         private const byte RsrHenched = 5;
+        private const byte RsrPvP = 6;
 
         private const string BocchiInternalName = "BOCCHI";
 
+        /// <summary>Where RSR keeps the mode. Its own assembly, not the plugin assembly.</summary>
+        private const string RsrCoreAssembly = "RotationSolver.Basic";
+        private const string RsrDataCenter = "RotationSolver.Basic.DataCenter";
+
         private readonly IDalamudPluginInterface pluginInterface;
         private readonly IPluginLog log;
-        private readonly Configuration config;
 
-        /// <summary>Whether RSR was actually running when we paused it. Nothing is restored if it
-        /// was already off - coming back from a raise is not an excuse to switch somebody's
+        /// <summary>The mode RSR was actually in when we paused it, or null when it could not be
+        /// read and the configured fallback has to answer for it.</summary>
+        private byte? capturedMode;
+
+        /// <summary>Whether RSR was running at all when we paused it. Nothing is restored if it was
+        /// already off - coming back from a raise is not an excuse to switch somebody's
         /// autorotation on for them.</summary>
         private bool wasRsrActive;
         private bool isPaused;
 
-        public RsrManager(IDalamudPluginInterface pluginInterface, IPluginLog log, Configuration config)
+        /// <summary>
+        /// The window's copy of the live mode, refreshed on a timer.
+        ///
+        /// Draw runs every frame and the read walks every assembly in the process. A pause reads
+        /// fresh - a stale answer there would restore the wrong mode - but nobody needs a label
+        /// repainted at 120Hz.
+        /// </summary>
+        private byte? peekedMode;
+        private long peekedAt;
+        private const long PeekTtlMs = 500;
+
+        public RsrManager(IDalamudPluginInterface pluginInterface, IPluginLog log)
         {
             this.pluginInterface = pluginInterface;
             this.log = log;
-            this.config = config;
         }
 
         public bool IsPaused => isPaused;
@@ -65,16 +97,35 @@ namespace AutoRezzer.Core
         /// IPC, so that is unknowable from here; presence is the closest available signal.</summary>
         public bool IsBocchiInstalled => IsPluginLoaded(BocchiInternalName);
 
-        /// <summary>The mode RSR will be put back into, resolved for display as well as for use.</summary>
-        public string ResumeModeName => ResolveResumeMode() switch
+        /// <summary>
+        /// RSR's mode right now, for the window, or empty when it cannot be read.
+        ///
+        /// Throttled. See <see cref="peekedMode"/>.
+        /// </summary>
+        public string LiveModeName
         {
-            RsrHenched => "Henched",
-            RsrManual => "Manual",
-            RsrTargetOnly => "Target Only",
-            _ => "Auto",
-        };
+            get
+            {
+                long now = Environment.TickCount64;
+                if (now - peekedAt > PeekTtlMs)
+                {
+                    peekedMode = ReadLiveMode();
+                    peekedAt = now;
+                }
 
-        /// <summary>Whether RSR's autorotation is running right now.</summary>
+                return peekedMode.HasValue ? NameOf(peekedMode.Value) : string.Empty;
+            }
+        }
+
+        /// <summary>Whether the live read is working, which is what decides whether the fallback
+        /// setting matters at all.</summary>
+        public bool CanReadLiveMode => !string.IsNullOrEmpty(LiveModeName);
+
+        /// <summary>Whether RSR's autorotation is running right now, over IPC.
+        ///
+        /// Only used when the live read has failed. It answers a coarser question - Manual and
+        /// Henched both report true, Off reports false - which is enough to decide whether there is
+        /// anything to pause, and not enough to decide what to restore.</summary>
         public bool IsRsrActive()
         {
             try
@@ -94,20 +145,35 @@ namespace AutoRezzer.Core
         /// <summary>Stops RSR for the duration of a raise. Idempotent; safe to call every tick.</summary>
         public void Pause()
         {
-            if (!config.PauseRotationSolver || isPaused)
+            if (isPaused)
                 return;
 
-            if (!IsRsrActive())
-                return;
+            // Read BEFORE anything is sent, or the mode read back is the one we just imposed.
+            byte? live = ReadLiveMode();
 
+            if (live.HasValue)
+            {
+                if (live.Value == RsrOff)
+                    return;
+            }
+            else if (!IsRsrActive())
+            {
+                return;
+            }
+
+            capturedMode = live;
             wasRsrActive = true;
             isPaused = true;
 
             if (ChangeMode(RsrOff))
-                log.Information("[AutoRezzer] Paused Rotation Solver Reborn for raising.");
+            {
+                log.Information(live.HasValue
+                    ? $"[AutoRezzer] Paused Rotation Solver Reborn for raising (was {NameOf(live.Value)})."
+                    : "[AutoRezzer] Paused Rotation Solver Reborn for raising.");
+            }
         }
 
-        /// <summary>Puts RSR back the way this plugin's settings say it was. Idempotent.</summary>
+        /// <summary>Puts RSR back into the mode it was in. Idempotent.</summary>
         public void Resume()
         {
             if (!isPaused)
@@ -120,25 +186,153 @@ namespace AutoRezzer.Core
 
             wasRsrActive = false;
 
-            byte mode = ResolveResumeMode();
+            byte mode = capturedMode ?? ResolveFallbackMode();
+            bool guessed = !capturedMode.HasValue;
+            capturedMode = null;
+
+            // The peek is stale the instant this lands, and the window would otherwise spend half a
+            // second telling the user RSR is off while it is not.
+            peekedAt = 0;
+
             if (ChangeMode(mode))
-                log.Information($"[AutoRezzer] Resumed Rotation Solver Reborn ({ResumeModeName}).");
+            {
+                log.Information(guessed
+                    ? $"[AutoRezzer] Resumed Rotation Solver Reborn ({NameOf(mode)}, from the fallback setting)."
+                    : $"[AutoRezzer] Resumed Rotation Solver Reborn ({NameOf(mode)}).");
+            }
+        }
+
+        // ══════════════════════════════════════════════════════════
+        //  READING RSR'S ACTUAL MODE
+        // ══════════════════════════════════════════════════════════
+
+        /// <summary>
+        /// RSR's mode, read off the live plugin, or null when that is not possible.
+        ///
+        /// ── THE FLAGS ARE NOT INDEPENDENT, AND THE ORDER IS THE POINT ─────
+        /// RSCommands.UpdateState sets several of them per mode, so testing them in the wrong order
+        /// gives a wrong answer that looks right: Henched sets IsManual as well as IsHenched, so
+        /// asking about Manual first reports Manual for every BOCCHI user - which is exactly the
+        /// class of mistake this whole file exists to stop. The order below is narrowest first.
+        ///
+        /// ── AND NOTHING IS CACHED ACROSS CALLS ────────────────────────────
+        /// Not a Type, not a PropertyInfo. Holding either would keep RSR's assembly load context
+        /// alive and stop RSR unloading cleanly on its own update - this plugin would become the
+        /// reason somebody's RSR update needed a game restart. Resolution is a walk over the loaded
+        /// assemblies, which happens once per raise, not once per frame.
+        /// </summary>
+        private byte? ReadLiveMode()
+        {
+            try
+            {
+                var dataCenter = FindRsrDataCenter();
+                if (dataCenter == null)
+                    return null;
+
+                bool? state = ReadStaticBool(dataCenter, "State");
+                if (!state.HasValue)
+                    return null;
+
+                if (!state.Value)
+                    return RsrOff;
+
+                if (ReadStaticBool(dataCenter, "IsHenched") == true)
+                    return RsrHenched;
+
+                if (ReadStaticBool(dataCenter, "IsAutoDuty") == true)
+                    return RsrAutoDuty;
+
+                if (ReadStaticBool(dataCenter, "IsPvPStateEnabled") == true)
+                    return RsrPvP;
+
+                if (ReadStaticBool(dataCenter, "IsTargetOnly") == true)
+                    return RsrTargetOnly;
+
+                if (ReadStaticBool(dataCenter, "IsManual") == true)
+                    return RsrManual;
+
+                return RsrAuto;
+            }
+            catch (Exception ex)
+            {
+                log.Debug($"[AutoRezzer] Could not read Rotation Solver Reborn's mode: {ex.Message}");
+                return null;
+            }
         }
 
         /// <summary>
-        /// Which mode to come back to.
+        /// RSR's DataCenter type, found among the assemblies loaded in this process.
         ///
-        /// AutoDetect is the default and picks Henched when BOCCHI is loaded, because that is the
-        /// mode BOCCHI drives RSR with and coming back to anything else quietly takes the wheel off
-        /// it. With no BOCCHI, Auto - the mode somebody running RSR by hand is nearly always in.
+        /// Every plugin gets its own load context, so the type is not reachable by name from here -
+        /// the contexts have to be walked. Returns null rather than throwing when RSR is absent,
+        /// which is the ordinary case for anybody not running it.
         /// </summary>
-        private byte ResolveResumeMode() => config.RsrResume switch
+        private static Type? FindRsrDataCenter()
         {
-            RsrResumeMode.Auto => RsrAuto,
-            RsrResumeMode.Manual => RsrManual,
-            RsrResumeMode.TargetOnly => RsrTargetOnly,
-            RsrResumeMode.Henched => RsrHenched,
-            _ => IsBocchiInstalled ? RsrHenched : RsrAuto,
+            foreach (var context in AssemblyLoadContext.All)
+            {
+                foreach (var assembly in context.Assemblies)
+                {
+                    if (!string.Equals(assembly.GetName().Name, RsrCoreAssembly, StringComparison.Ordinal))
+                        continue;
+
+                    var type = assembly.GetType(RsrDataCenter, throwOnError: false);
+                    if (type != null)
+                        return type;
+                }
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// One static bool off that type, or null when it is not there.
+        ///
+        /// NonPublic as well as Public: DataCenter is an internal class, so its members are only
+        /// public to RSR. A null return is what makes a renamed field degrade into "use the
+        /// fallback" instead of an exception every time somebody dies.
+        /// </summary>
+        private static bool? ReadStaticBool(Type type, string name)
+        {
+            const BindingFlags flags = BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic;
+
+            var property = type.GetProperty(name, flags);
+            if (property?.GetValue(null) is bool fromProperty)
+                return fromProperty;
+
+            var field = type.GetField(name, flags);
+            if (field?.GetValue(null) is bool fromField)
+                return fromField;
+
+            return null;
+        }
+
+        // ══════════════════════════════════════════════════════════
+
+        /// <summary>
+        /// The mode to fall back to when RSR's own state could not be read.
+        ///
+        /// NOT A SETTING ANY MORE, and it should never have been one: a mode chosen in advance is
+        /// applied to a state nobody looked at, which is how "resume as Henched" used to restore
+        /// Henched to people who had been in Auto. The live read answers it properly, and this is
+        /// only the guess for the day RSR renames a field.
+        ///
+        /// Henched when BOCCHI is loaded, because that is the mode BOCCHI drives RSR with and coming
+        /// back to anything else quietly takes the wheel off it. With no BOCCHI, Auto, the mode
+        /// somebody running RSR by hand is nearly always in.
+        /// </summary>
+        private byte ResolveFallbackMode() => IsBocchiInstalled ? RsrHenched : RsrAuto;
+
+        private static string NameOf(byte mode) => mode switch
+        {
+            RsrOff => "Off",
+            RsrAuto => "Auto",
+            RsrTargetOnly => "Target Only",
+            RsrManual => "Manual",
+            RsrAutoDuty => "AutoDuty",
+            RsrHenched => "Henched",
+            RsrPvP => "PvP",
+            _ => "Auto",
         };
 
         /// <summary>

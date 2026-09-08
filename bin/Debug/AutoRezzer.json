@@ -2,20 +2,25 @@
   "Author": "Mayo Botic",
   "Name": "AutoRezzer",
   "InternalName": "AutoRezzer",
-  "AssemblyVersion": "0.1.0.0",
-  "Description": "Raises dead players around you automatically, when you are on a job that can and it is safe to do so.\n\nOne switch. While it is on, any raisable body in range is raised - Swiftcast first when it is up - unless there are enemies standing on it.",
+  "AssemblyVersion": "1.4.0.0",
+  "Description": "Raises dead players around you, and accepts raises cast on you.\n\nRequires Rotation Solver Reborn - add the Combat Reborn repository:\nhttps://raw.githubusercontent.com/FFXIV-CombatReborn/CombatRebornRepo/main/pluginmaster.json\n\nOne switch. Anyone in range who needs a raise gets one, Swiftcast first. In Occult Crescent it uses Occult Raise or Revive instead, which work on any job. It pauses your rotation only when a rez is genuinely about to happen, then puts it back exactly as it was. Four switches decide where it works: open world and FATEs, instanced duties, Eureka and Bozja, and the Crescent.\n\nBuilt for Occult Crescent and FATEs.",
   "ApplicableVersion": "any",
   "Tags": [
     "raise",
     "resurrect",
     "healer",
-    "auto"
+    "auto",
+    "fate",
+    "occult-crescent",
+    "rotationsolver",
+    "bocchi",
+    "phantom-job"
   ],
   "DalamudApiLevel": 15,
   "LoadRequiredState": 0,
   "LoadSync": false,
   "CanUnloadAsync": false,
   "LoadPriority": 0,
-  "Punchline": "Automatic raises, when it is safe to cast them.",
+  "Punchline": "Raises everyone around you, and accepts your own. Built for Occult Crescent and FATEs.",
   "AcceptsFeedback": false
 }

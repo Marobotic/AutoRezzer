@@ -45,7 +45,7 @@
     "/home/maro/.nuget/packages/": {}
   },
   "project": {
-    "version": "1.4.0",
+    "version": "1.4.1",
     "restore": {
       "projectUniqueName": "/home/maro/Documents/GitHub/AutoRezzer/AutoRezzer.csproj",
       "projectName": "AutoRezzer",
@@ -103,10 +103,6 @@
         "downloadDependencies": [
           {
             "name": "Microsoft.AspNetCore.App.Ref",
-            "version": "[10.0.11, 10.0.11]"
-          },
-          {
-            "name": "Microsoft.WindowsDesktop.App.Ref",
             "version": "[10.0.11, 10.0.11]"
           }
         ],

@@ -127,7 +127,7 @@ namespace AutoRezzer
             accepter = new RaiseAccepter(objectTable, gameGui, log, config, Save);
             switcher = new JobSwitcher(objectTable, condition, log, config);
             rsrManager = new RsrManager(pluginInterface, log);
-            zone = new Zone(log, phantom);
+            zone = new Zone(log, clientState, phantom);
 
             fonts = new Fonts(pluginInterface, log);
             icons = new Icons(textureProvider);
@@ -383,7 +383,15 @@ namespace AutoRezzer
                 //
                 // The MASTER switch is a different matter and has already had its say: nothing
                 // reaches this line while it is off.
-                _ = accepter.Tick();
+                //
+                // PvP is the other exception, and the only gate that reaches down this far. The
+                // argument above is that accepting costs nothing - which holds everywhere a raise
+                // can be cast on you, and PvP is precisely the place one cannot be. There is no
+                // prompt in there to answer, so this is the plugin going properly quiet rather
+                // than politely idling.
+                if (!zone.InPvP)
+                    _ = accepter.Tick();
+
                 return;
             }
 
@@ -650,7 +658,13 @@ namespace AutoRezzer
         /// </summary>
         private string StandDownReason()
         {
-            // Sanctuary first, because it cuts across all four content switches: a city is open
+            // PvP first, and above even the sanctuary rule, because it is the only one of these
+            // with no setting behind it. Nothing can be raised in there and the attempt costs a
+            // match; see Zone.InPvP for why that is not negotiable.
+            if (zone.InPvP)
+                return "you're in PvP";
+
+            // Sanctuary next, because it cuts across all four content switches: a city is open
             // world, the Crescent's base camp is the Crescent, and the answer is the same in both.
             if (!config.RezInSanctuaries && zone.InSanctuary)
                 return "you're in a sanctuary";

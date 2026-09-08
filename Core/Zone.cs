@@ -29,8 +29,8 @@ namespace AutoRezzer.Core
     }
 
     /// <summary>
-    /// Where the character is, in the only two senses this plugin cares about: what KIND of content
-    /// this is, and whether it is somewhere nobody can die.
+    /// Where the character is, in the only three senses this plugin cares about: what KIND of
+    /// content this is, whether it is somewhere nobody can die, and whether it is PvP.
     ///
     /// ── WHY INTENDED USE AND NOT A LIST OF TERRITORY IDS ──────────────────
     /// Same argument as PhantomJobs makes about the Occult Crescent director. Eureka is four zones,
@@ -51,11 +51,13 @@ namespace AutoRezzer.Core
     internal sealed class Zone
     {
         private readonly IPluginLog log;
+        private readonly IClientState clientState;
         private readonly PhantomJobs phantom;
 
-        public Zone(IPluginLog log, PhantomJobs phantom)
+        public Zone(IPluginLog log, IClientState clientState, PhantomJobs phantom)
         {
             this.log = log;
+            this.clientState = clientState;
             this.phantom = phantom;
         }
 
@@ -137,6 +139,47 @@ namespace AutoRezzer.Core
             ContentKind.FieldOperation or ContentKind.OccultCrescent => "Field operations",
             _ => "Open world and FATEs",
         };
+
+        /// <summary>
+        /// Whether the character is anywhere PvP: Frontline, Crystalline Conflict, Rival Wings, the
+        /// Wolves' Den.
+        ///
+        /// ── THE ONE PLACE THIS PLUGIN MUST NOT BE CLEVER ──────────────────
+        /// PvP has no raises. Nobody can be rezzed and nobody can rez, so every single thing this
+        /// plugin does in there is, at best, wasted work.
+        ///
+        /// At worst it is genuinely destructive. Frontline lets you change class at the spawn point,
+        /// which is also where dead players pile up waiting to respawn, so the Red Mage detour sees
+        /// a field of bodies, decides an instant raise is called for, and swaps your job out from
+        /// under you mid-match - throwing away the match's accumulated damage and your PvP series
+        /// progress on the class you actually queued as. There is no upside to trade that against,
+        /// because the raise it swapped for cannot be cast in the first place.
+        ///
+        /// So this is not a setting, and it never will be. There is no configuration of this plugin
+        /// under which running it in PvP is the right answer.
+        ///
+        /// The Den counts. It is a sanctuary too, but that is a setting somebody may have turned
+        /// off, and this must not depend on one.
+        /// ─────────────────────────────────────────────────────────────────
+        /// </summary>
+        public bool InPvP
+        {
+            get
+            {
+                try
+                {
+                    return clientState.IsPvP;
+                }
+                catch (Exception ex)
+                {
+                    // Unlike the sanctuary flag, the safe answer here is YES. Standing down in the
+                    // overworld because a read failed costs a rez; running in Frontline because a
+                    // read failed costs somebody their match.
+                    log.Debug($"[AutoRezzer] Could not read the PvP flag: {ex.Message}");
+                    return true;
+                }
+            }
+        }
 
         /// <summary>
         /// Whether the character is standing in a sanctuary: a rested area, where the game will not

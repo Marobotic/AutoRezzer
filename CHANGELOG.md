@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.4.1
+
+### It stands down in PvP
+
+Frontline, Crystalline Conflict, Rival Wings, the Wolves' Den: the plugin holds completely until you
+leave. Nothing sweeps, nothing swaps your job, nothing accepts anything.
+
+Nobody can be raised in PvP, so there was never anything to gain in there - but there was plenty to
+lose. Frontline lets you change class at the spawn point, and the spawn point is exactly where dead
+players pile up waiting to respawn. The plugin saw a field of bodies, decided an instant raise was
+called for, and turned you into a Red Mage mid-match, taking the damage you had done and your series
+progress on the class you queued as with it.
+
+This is not a setting and will not become one. The card and the server bar both say so while it is
+holding, so a plugin that is switched on and deliberately doing nothing still looks switched on.
+
+### One less line on the card
+
+The **Active** badge already says a job is ready to rez, so the "Ready to rez" line that sat under
+the job name has gone. The line is still there when there is something to say - a level you are
+synced below, a Swiftcast still on cooldown, a job with no raise at all.
+
 ## 1.4.0
 
 A new window, and a lot fewer settings.

@@ -9,3 +9,4 @@
 /home/maro/Documents/GitHub/AutoRezzer/obj/Debug/AutoRezzer.csproj.AssemblyReference.cache
 /home/maro/Documents/GitHub/AutoRezzer/obj/Debug/AutoRezzer.dll
 /home/maro/Documents/GitHub/AutoRezzer/obj/Debug/AutoRezzer.pdb
+/home/maro/Documents/GitHub/AutoRezzer/obj/Debug/AutoRezzer.sourcelink.json

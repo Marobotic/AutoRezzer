@@ -36,7 +36,9 @@ namespace AutoRezzer.Core
     /// <param name="JobName">The job doing the rezzing, phantom or otherwise.</param>
     /// <param name="Level">"Lv 100", or "Lv 50 of 100" when the level is synced down.</param>
     /// <param name="IconId">Game icon to draw, or 0 when there is nothing to draw.</param>
-    /// <param name="Ability">What this job can rez with, or why it cannot.</param>
+    /// <param name="Ability">Why this job cannot rez, or what it is waiting on. EMPTY when it
+    /// simply can: the Active badge beside the name already says that, and a "Ready to rez" line
+    /// under it was the same claim made twice.</param>
     /// <param name="AbilityTone">How to colour the above.</param>
     /// <param name="State">What the plugin is doing right now.</param>
     /// <param name="Detail">One clause under it, or empty.</param>
@@ -245,8 +247,11 @@ namespace AutoRezzer.Core
             //
             // Your job, your icon, your rez. The phantom job gets its own card underneath, which is
             // where "and this is what will actually cast it" belongs.
+            // Good with no sentence. Every "ready" case below returns the same empty string, for
+            // the reason on the Ability param: the badge is the readiness, the line is only ever
+            // the exception to it.
             if (PhantomRezReady())
-                return (jobName, levelText, jobIcon, "Ready to rez", Tone.Good);
+                return (jobName, levelText, jobIcon, string.Empty, Tone.Good);
 
             uint raise = RezIds.RaiseActionFor(job);
             if (raise == 0)
@@ -268,19 +273,19 @@ namespace AutoRezzer.Core
 
             // ── Red Mage never hardcasts, so Swiftcast is not its story ──
             if (raise == RezIds.Verraise)
-                return (jobName, levelText, jobIcon, "Ready to rez", Tone.Good);
+                return (jobName, levelText, jobIcon, string.Empty, Tone.Good);
 
             if (synced < RezIds.SwiftcastLevel)
             {
                 return (jobName, levelText, jobIcon,
-                        $"Ready, no Swiftcast until {RezIds.SwiftcastLevel}", Tone.Warn);
+                        $"No Swiftcast until {RezIds.SwiftcastLevel}", Tone.Warn);
             }
 
             int left = executor.SwiftcastSecondsLeft();
             if (left > 0)
                 return (jobName, levelText, jobIcon, $"Swiftcast in {left}s", Tone.Warn);
 
-            return (jobName, levelText, jobIcon, "Ready to rez", Tone.Good);
+            return (jobName, levelText, jobIcon, string.Empty, Tone.Good);
         }
 
         /// <summary>
@@ -330,6 +335,16 @@ namespace AutoRezzer.Core
                 // Off says off. There is no second line, because there is nothing a second line
                 // could add: the switch above it is right there and already says the same thing.
                 return ("Off", string.Empty, Tone.Idle);
+
+            // Same order as Plugin.StandDownReason, PvP included: it is a hold with no setting
+            // behind it, so the card has to say why rather than leaving a switched-on plugin
+            // sitting there doing nothing for no visible reason.
+            // No second line, for the same reason "Off" has none: the sentence is already the whole
+            // answer, and "nothing can be raised here" under it was explaining a rule of the game
+            // rather than anything about the plugin. The bar still reads paused, which is the state;
+            // this says which of the pauses it is.
+            if (zone.InPvP)
+                return ("Disabled in PvP", string.Empty, Tone.Idle);
 
             if (!config.RezInSanctuaries && zone.InSanctuary)
                 return ("Paused", string.Empty, Tone.Idle);

@@ -64,6 +64,10 @@
             {
               "name": "Microsoft.AspNetCore.App.Ref",
               "version": "[10.0.11, 10.0.11]"
+            },
+            {
+              "name": "Microsoft.WindowsDesktop.App.Ref",
+              "version": "[10.0.11, 10.0.11]"
             }
           ],
           "frameworkReferences": {
